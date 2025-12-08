@@ -17,19 +17,18 @@ fn server_client_connection() {
     client.outgoing.unwrap().send(msg).unwrap();
 
     // recv
-    let msg = server.incoming.recv().unwrap();
-    assert_eq!(msg[..8], [127, 0, 0, 1, 237, 46, 100, 100]);
+    let (msg, client_index) = server.message_incoming.recv().unwrap();
+    assert_eq!(msg[..4], [100, 100, 100, 100]);
 
     //------// Server -> Client //------//
 
     // send
     let mut msg = BytesMut::zeroed(256);
-    msg[..6].copy_from_slice(&[127, 0, 0, 1, 237, 46]);
-    msg[6..256].fill(200);
+    msg.fill(200);
     let msg = msg.freeze();
-    server.outgoing.send(msg).unwrap();
+    server.message_outgoing.send((msg, client_index)).unwrap();
 
     // recv
     let msg = client.incoming.unwrap().recv().unwrap();
-    assert_eq!(msg[..8], [200, 200, 200, 200, 200, 200, 200, 200]);
+    assert_eq!(msg[..4], [200, 200, 200, 200]);
 }

@@ -3,14 +3,12 @@ use std::net::{SocketAddr, UdpSocket};
 use bytes::{Bytes, BytesMut};
 use crossbeam::channel::Sender;
 
-use super::codec::{ADDR_SIZE, CodecAddrV4};
-
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
 const REALLOCATION_SIZE: usize = 2_usize.pow(16);
 
-/// Packet receiving structure.
+/// Receive packets from network. Send them to manager.
 ///
 /// ## Usage
 ///
@@ -22,7 +20,7 @@ const REALLOCATION_SIZE: usize = 2_usize.pow(16);
 ///
 /// ```ignore
 /// loop {
-///     match socket_recv.recv() {
+///     match recv.recv() {
 ///         Ok(_) => continue,
 ///         Err(_) => break,
 ///     }
@@ -37,14 +35,18 @@ pub struct Recv {
     socket: UdpSocket,
     buf: BytesMut,
     max_msg_size: usize,
-    incoming: Sender<Bytes>,
+    incoming: Sender<(Bytes, SocketAddr)>,
 }
 
 impl Recv {
     /// `Err(_)` <=> or :
     /// - `socket` unbound.
     /// - `socket` bound but not IPv4.
-    pub fn new(socket: UdpSocket, max_msg_size: usize, incoming: Sender<Bytes>) -> Result<Self> {
+    pub fn new(
+        socket: UdpSocket,
+        max_msg_size: usize,
+        incoming: Sender<(Bytes, SocketAddr)>,
+    ) -> Result<Self> {
         //------// Checks //------//
 
         let Ok(local_addr) = socket.local_addr() else {
@@ -64,9 +66,7 @@ impl Recv {
         })
     }
 
-    /// `Ok(true)` <=> Packet was transmitted.
-    ///
-    /// `Ok(false)` <=> Packet was dropped because protocol was invalid.
+    /// `Ok(_)` <=> A packet was transmitted.
     ///
     /// `Err(_)` <=> or :
     /// - Socket fatal error while listening.
@@ -75,51 +75,37 @@ impl Recv {
     /// Blocking <=> or :
     /// - Waiting for packet.
     /// - Waiting for channel to have space.
-    pub fn recv(&mut self) -> Result<bool> {
+    pub fn recv(&mut self) -> Result<()> {
         //------// Wait packet //------//
 
         // Receive a packet from socket (fallible, blocking).
         //
-        // Buffer packet but leave bytes front for client address.
+        // Buffer packet.
         // Bytes out of buffer bounds are discarded.
 
-        let (packet_len, client_addr) = self.socket.recv_from(&mut self.buf[ADDR_SIZE..])?;
-        let msg_len = packet_len + ADDR_SIZE;
-
-        //------// Append client address //------//
-
-        // Encode client address as bytes.
-        //
-        // Append it to the message.
-
-        let SocketAddr::V4(client_addr) = client_addr else {
-            unreachable!("cannot receive IPv6 client packet on IPv4 socket");
-        };
-        let client_addr = client_addr.encode();
-
-        self.buf[..ADDR_SIZE].copy_from_slice(&client_addr);
+        let (packet_len, client_addr) = self.socket.recv_from(&mut self.buf)?;
 
         //------// Send message //------//
 
         // Take message ownership from buffer.
         // This reduce buffer size.
         //
-        // Eventually reallocate buffer space for next messages.
-        // Resize it for next message.
+        // Eventually reallocate buffer capacity for next messages.
+        // Resize buffer for next message.
         //
         // Send message through incoming (fallible, blocking).
 
-        let msg = self.buf.split_to(msg_len).freeze();
+        let packet = self.buf.split_to(packet_len).freeze();
 
         if self.buf.capacity() < self.max_msg_size {
             self.buf.reserve(REALLOCATION_SIZE);
         }
         self.buf.resize(self.max_msg_size, 0);
 
-        self.incoming.send(msg)?;
+        self.incoming.send((packet, client_addr))?;
 
         //------//
 
-        Ok(true)
+        Ok(())
     }
 }

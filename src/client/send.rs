@@ -6,7 +6,7 @@ use crossbeam::channel::Receiver;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-/// Message sending structure.
+/// Receive packets from manager. Send them to network.
 ///
 /// ## Usage
 ///

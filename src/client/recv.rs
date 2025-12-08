@@ -8,7 +8,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 const REALLOCATION_SIZE: usize = 2_usize.pow(16);
 
-/// Packet receiving structure.
+/// Receive packets from network. Send them to manager.
 ///
 /// ## Usage
 ///
@@ -20,7 +20,7 @@ const REALLOCATION_SIZE: usize = 2_usize.pow(16);
 ///
 /// ```ignore
 /// loop {
-///     match socket_recv.recv() {
+///     match recv.recv() {
 ///         Ok(_) => continue,
 ///         Err(_) => break,
 ///     }

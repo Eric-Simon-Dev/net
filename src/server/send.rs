@@ -1,14 +1,12 @@
-use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
 
 use bytes::Bytes;
 use crossbeam::channel::Receiver;
 
-use super::codec::{ADDR_SIZE, CodecAddrV4};
-
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-/// Message sending structure.
+/// Receive packets from manager. Send them to network.
 ///
 /// ## Usage
 ///
@@ -31,14 +29,14 @@ type Result<T> = std::result::Result<T, Error>;
 //
 pub struct Send {
     socket: UdpSocket,
-    outgoing: Receiver<Bytes>,
+    outgoing: Receiver<(Bytes, SocketAddr)>,
 }
 
 impl Send {
     /// `Err(_)` <=> or :
     /// - `socket` unbound.
     /// - `socket` bound but not IPv4.
-    pub fn new(socket: UdpSocket, outgoing: Receiver<Bytes>) -> Result<Self> {
+    pub fn new(socket: UdpSocket, outgoing: Receiver<(Bytes, SocketAddr)>) -> Result<Self> {
         //------// Checks //------//
 
         let Ok(local_addr) = socket.local_addr() else {
@@ -59,23 +57,17 @@ impl Send {
     ///
     /// Blocking <=> Waiting for messages.
     pub fn send(&mut self) -> Result<()> {
-        //------// Wait message //------//
+        //------// Wait packet //------//
 
         // Wait for a message from outgoing (fallible, blocking).
 
-        let msg = self.outgoing.recv()?;
-
-        //------// Parse client address //------//
-
-        let client_addr: [u8; ADDR_SIZE] = msg[..ADDR_SIZE].try_into().unwrap();
-        let client_addr = SocketAddrV4::decode(client_addr);
-        let client_addr = SocketAddr::V4(SocketAddrV4::from(client_addr));
+        let (packet, client_addr) = self.outgoing.recv()?;
 
         //------// Send packet //------//
 
         // Send packet to client address (fallible).
 
-        self.socket.send_to(&msg[ADDR_SIZE..], client_addr)?;
+        self.socket.send_to(&packet, client_addr)?;
 
         //------//
 

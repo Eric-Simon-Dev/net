@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 bytes = "1"
 crossbeam = "0"
+rustc-hash = "2"
