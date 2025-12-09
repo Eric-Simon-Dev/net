@@ -1,106 +1,103 @@
+pub mod clients;
+
 use std::net::SocketAddr;
 
-use bytes::Bytes;
+use bytes::BytesMut;
 use crossbeam::{
     channel::{Receiver, Sender},
     select,
 };
-use rustc_hash::FxHashMap;
+
+use clients::Clients;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-const CLIENT_CAPACITY: usize = 256;
-
-/// Handles app-level protocols. Handles clients.
+/// Interface between UDP packets and messages.
+///
+/// Apply transport protocols.
 ///
 /// ## Usage
 ///
-/// Meant to be used in its own thread looping over `manage()`.
-///
-/// Blocks <=> or :
-/// - Wait for an incoming packet + client to manage.
-/// - Wait for an outgoing packet + client to manage.
+/// Meant to be used in its own thread looping over `handle()`.
 ///
 /// ```ignore
 /// loop {
-///     match handle.handle() {
+///     match handler.handle() {
 ///         Ok(_) => continue,
 ///         Err(_) => break,
 ///     }
 /// }
 /// ```
-pub struct Handle {
-    // clients
-    addr_to_index: FxHashMap<SocketAddr, usize>,
-    available_client_indices: Vec<usize>,
-    clients: Vec<Option<SocketAddr>>,
+pub struct Handler {
+    clients: Clients,
 
     // channels
-    packet_incoming: Receiver<(Bytes, SocketAddr)>,
-    packet_outgoing: Sender<(Bytes, SocketAddr)>,
-    message_incoming: Sender<(Bytes, usize)>,
-    message_outgoing: Receiver<(Bytes, usize)>,
+    incoming_packet: Receiver<(BytesMut, SocketAddr)>,
+    outgoing_message: Receiver<(BytesMut, usize)>,
+    outgoing_packet: Sender<(BytesMut, SocketAddr)>,
+    incoming_message: Sender<(BytesMut, usize)>,
 }
 
-impl Handle {
+impl Handler {
     pub fn new(
-        packet_incoming: Receiver<(Bytes, SocketAddr)>,
-        packet_outgoing: Sender<(Bytes, SocketAddr)>,
-        message_incoming: Sender<(Bytes, usize)>,
-        message_outgoing: Receiver<(Bytes, usize)>,
+        incoming_packet: Receiver<(BytesMut, SocketAddr)>,
+        outgoing_message: Receiver<(BytesMut, usize)>,
+        outgoing_packet: Sender<(BytesMut, SocketAddr)>,
+        incoming_message: Sender<(BytesMut, usize)>,
     ) -> Self {
         Self {
-            addr_to_index: FxHashMap::with_capacity_and_hasher(CLIENT_CAPACITY, Default::default()),
-            available_client_indices: (0..CLIENT_CAPACITY).rev().collect(),
-            clients: vec![None; CLIENT_CAPACITY],
-            packet_incoming,
-            packet_outgoing,
-            message_incoming,
-            message_outgoing,
+            clients: Clients::new(),
+            incoming_packet,
+            outgoing_packet,
+            incoming_message,
+            outgoing_message,
         }
     }
 
-    /// `Err(_)` <=> or :
-    /// - A channel fail while receiving.
+    /// `Err(_)` <=> Channel disconnection.
     pub fn handle(&mut self) -> Result<()> {
         select! {
-            recv(self.packet_incoming) -> result => {
-                let (packet, client_addr) = result?;
+            recv(self.incoming_packet) -> packet => {
+                let (packet, client_addr) = packet?;
                 self.handle_incoming_packet(packet, client_addr)?;
             }
-            recv(self.message_outgoing) -> result => {
-                let (message, client_index) = result?;
+            recv(self.outgoing_message) -> message => {
+                let (message, client_index) = message?;
                 self.handle_outgoing_message(message, client_index)?;
             }
         }
         Ok(())
     }
 
-    fn handle_incoming_packet(&mut self, packet: Bytes, client_addr: SocketAddr) -> Result<()> {
-        let client_index = match self.addr_to_index.get(&client_addr).copied() {
+    /// `Err(_)` <=> Channel disconnection.
+    ///
+    /// Try add client if client unknown.
+    /// Drop packet if not possible.
+    fn handle_incoming_packet(&mut self, packet: BytesMut, client_addr: SocketAddr) -> Result<()> {
+        let client_index = match self.clients.addr_to_index(client_addr) {
             Some(client_index) => client_index,
-            None => match self.available_client_indices.pop() {
-                Some(client_index) => {
-                    self.addr_to_index
-                        .insert(client_addr, client_index);
-                    self.clients[client_index] = Some(client_addr);
-                    client_index
-                }
-                None => return Err("client max capacity reached".into()),
+            None => match self.clients.add(client_addr) {
+                Ok(client_index) => client_index,
+                Err(_) => return Ok(()),
             },
         };
 
-        self.message_incoming.send((packet, client_index))?;
+        self.incoming_message.send((packet, client_index))?;
 
         Ok(())
     }
 
-    fn handle_outgoing_message(&mut self, message: Bytes, client_index: usize) -> Result<()> {
-        let Some(client_addr) = self.clients[client_index] else {
-            return Err("unknown client".into());
+    /// `Err(_)` <=> Channel disconnection.
+    ///
+    /// Drop message if client unknown.
+    fn handle_outgoing_message(&mut self, message: BytesMut, client_index: usize) -> Result<()> {
+        let Some(client_addr) = self.clients.index_to_addr(client_index) else {
+            return Ok(());
         };
-        self.packet_outgoing.send((message, client_addr))?;
+
+        self.outgoing_packet.send((message, client_addr))?;
+
         Ok(())
     }
 }

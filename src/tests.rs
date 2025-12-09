@@ -4,31 +4,34 @@ use bytes::BytesMut;
 fn server_client_connection() {
     use crate::{client::Client, server::Server};
 
-    let server = Server::new(12012).unwrap();
+    let _server = Server::new(12012).unwrap();
     let mut client = Client::new(12013).unwrap();
     client.connect("0:12012").unwrap();
+}
 
-    //------// Client -> Server //------//
+#[test]
+fn multiple_exchanges() {
+    use crate::{client::Client, server::Server};
 
-    // send
-    let mut msg = BytesMut::zeroed(256);
-    msg.fill(100);
-    let msg = msg.freeze();
-    client.outgoing.unwrap().send(msg).unwrap();
+    let mut server = Server::new(12014).unwrap();
+    let mut client = Client::new(12015).unwrap();
+    client.connect("0:12014").unwrap();
 
-    // recv
-    let (msg, client_index) = server.message_incoming.recv().unwrap();
-    assert_eq!(msg[..4], [100, 100, 100, 100]);
+    // first send
+    let msg = BytesMut::zeroed(1);
+    client.outgoing_message().unwrap().send(msg).unwrap();
 
-    //------// Server -> Client //------//
+    // exchange and add 1 each return
+    for _ in 0..16 {
+        let (mut msg, client_index) = server.incoming_message().recv().unwrap();
+        msg[0] += 1;
+        server.outgoing_message().send((msg, client_index)).unwrap();
 
-    // send
-    let mut msg = BytesMut::zeroed(256);
-    msg.fill(200);
-    let msg = msg.freeze();
-    server.message_outgoing.send((msg, client_index)).unwrap();
+        let mut msg = client.incoming_message().unwrap().recv().unwrap();
+        msg[0] += 1;
+        client.outgoing_message().unwrap().send(msg).unwrap();
+    }
 
-    // recv
-    let msg = client.incoming.unwrap().recv().unwrap();
-    assert_eq!(msg[..4], [200, 200, 200, 200]);
+    let (msg, _) = server.incoming_message().recv().unwrap();
+    assert_eq!(msg[0], 32);
 }

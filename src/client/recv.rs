@@ -1,109 +1,86 @@
 use std::net::UdpSocket;
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use crossbeam::channel::Sender;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-const REALLOCATION_SIZE: usize = 2_usize.pow(16);
+const REALLOCATION_CAPACITY: usize = 1_048_576; // = 2^20
+const MAX_PACKET_SIZE: usize = 1024;
 
-/// Receive packets from network. Send them to manager.
+/// Receive UDP packets :
+/// 1. Receive/Buffer them.
+/// 2. Send them through `incoming_packet`.
 ///
 /// ## Usage
 ///
 /// Meant to be used in its own thread looping over `recv()`.
 ///
-/// Blocks <=> or :
-/// - Wait for a packet to receive.
-/// - Wait for incoming channel to have space.
-///
 /// ```ignore
 /// loop {
-///     match recv.recv() {
+///     match receiver.recv() {
 ///         Ok(_) => continue,
 ///         Err(_) => break,
 ///     }
 /// }
 /// ```
-///////////////////////////////////////////////////////////
-//
-// Invariants :
-// - `socket` is IPv4.
-//
-pub struct Recv {
+pub struct UdpPacketReceiver {
     socket: UdpSocket,
-    buf: BytesMut,
-    max_msg_size: usize,
-    incoming: Sender<Bytes>,
+    buffer: BytesMut,
+    incoming_packet: Sender<BytesMut>,
 }
 
-impl Recv {
-    /// `Err(_)` <=> or :
-    /// - `socket` unbound.
-    /// - `socket` bound but not IPv4.
-    pub fn new(socket: UdpSocket, max_msg_size: usize, incoming: Sender<Bytes>) -> Result<Self> {
-        //------// Checks //------//
-
-        let Ok(local_addr) = socket.local_addr() else {
-            return Err("socket unbound".into());
-        };
-        if !local_addr.is_ipv4() {
-            return Err("socket not IPv4".into());
-        }
-
-        //------//
-
-        Ok(Self {
+impl UdpPacketReceiver {
+    pub fn new(socket: UdpSocket, incoming_packet: Sender<BytesMut>) -> Self {
+        Self {
             socket,
-            buf: BytesMut::zeroed(max_msg_size),
-            max_msg_size,
-            incoming,
-        })
+            buffer: BytesMut::zeroed(MAX_PACKET_SIZE),
+            incoming_packet,
+        }
     }
 
-    /// `Ok(_)` <=> A message was transmitted.
-    ///
     /// `Err(_)` <=> or :
-    /// - Not connected to a server.
-    /// - Socket fatal error while listening.
-    /// - Channel disconnected.
+    /// - Socket error.
+    /// - Channel disconnection.
     ///
-    /// Blocking <=> or :
-    /// - Waiting for packet.
-    /// - Waiting for channel to have space.
-    pub fn recv(&mut self) -> Result<bool> {
-        //------// Wait packet //------//
+    /// Blocks <=> or :
+    /// - Wait for a packet.
+    /// - Wait for channel to have space.
+    pub fn recv(&mut self) -> Result<()> {
+        //------// Receive/Buffer packet //------//
 
-        // Receive a packet from socket (fallible, blocking).
-        //
-        // Buffer packet.
-        // Bytes out of buffer bounds are discarded.
-        // Packets are message on client.
+        // Receive/Buffer a packet (fallible, blocking).
+        // Bytes out of buffer size bounds are discarded.
 
-        let msg_len = self.socket.recv(&mut self.buf)?;
+        let packet_len = self.socket.recv(&mut self.buffer)?;
 
-        //------// Send message //------//
+        //------// Update buffer //------//
 
-        // Take message ownership from buffer.
+        // Move packet ownership out of buffer.
         // This reduce buffer size.
         //
-        // Eventually reallocate buffer space for next messages.
-        // Resize it for next message.
+        // Manually check and reallocate buffer capacity if necessary.
+        // Allow us to reallocate as big as we want.
         //
-        // Send message through incoming (fallible, blocking).
+        // Resize buffer for next message.
 
-        let msg = self.buf.split_to(msg_len).freeze();
+        let packet = self.buffer.split_to(packet_len);
 
-        if self.buf.capacity() < self.max_msg_size {
-            self.buf.reserve(REALLOCATION_SIZE);
+        if self.buffer.capacity() < MAX_PACKET_SIZE {
+            self.buffer.reserve(REALLOCATION_CAPACITY);
         }
-        self.buf.resize(self.max_msg_size, 0);
 
-        self.incoming.send(msg)?;
+        self.buffer.resize(MAX_PACKET_SIZE, 0);
+
+        //------// Send packet //------//
+
+        // Send packet through `incoming_packet` (fallible, blocking).
+
+        self.incoming_packet.send(packet)?;
 
         //------//
 
-        Ok(true)
+        Ok(())
     }
 }

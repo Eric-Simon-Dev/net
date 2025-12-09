@@ -51,6 +51,12 @@
 //! ## Usage
 //!
 //! Send/Recv using channels, update network entity
+//!
+
+//! ## Terminology
+//!
+//! Packet = Data from the network.
+//! Message = Data that passes the protocols. Consumable by the app.
 
 // Test
 

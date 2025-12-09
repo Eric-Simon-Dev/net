@@ -1,67 +1,51 @@
 use std::net::{SocketAddr, UdpSocket};
 
-use bytes::Bytes;
+use bytes::BytesMut;
 use crossbeam::channel::Receiver;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-/// Receive packets from manager. Send them to network.
+/// Send UDP packets :
+/// 1. Receive them from `outgoing_packet`.
+/// 2. Send them.
 ///
 /// ## Usage
 ///
-/// Meant to be used in its own thread looping over `recv()`.
-///
-/// Block <=> Wait for a message to send.
+/// Meant to be used in its own thread looping over `send()`.
 ///
 /// ```ignore
 /// loop {
-///     match send.send() {
+///     match sender.send() {
 ///         Ok(_) => continue,
 ///         Err(_) => break,
 ///     }
 /// }
 /// ```
-///////////////////////////////////////////////////////////
-//
-// Invariants :
-// - `socket` is IPv4.
-//
-pub struct Send {
+pub struct UdpPacketSender {
     socket: UdpSocket,
-    outgoing: Receiver<(Bytes, SocketAddr)>,
+    outgoing_packet: Receiver<(BytesMut, SocketAddr)>,
 }
 
-impl Send {
-    /// `Err(_)` <=> or :
-    /// - `socket` unbound.
-    /// - `socket` bound but not IPv4.
-    pub fn new(socket: UdpSocket, outgoing: Receiver<(Bytes, SocketAddr)>) -> Result<Self> {
-        //------// Checks //------//
-
-        let Ok(local_addr) = socket.local_addr() else {
-            return Err("socket unbound".into());
-        };
-        if !local_addr.is_ipv4() {
-            return Err("socket not IPv4".into());
+impl UdpPacketSender {
+    pub fn new(socket: UdpSocket, outgoing_packet: Receiver<(BytesMut, SocketAddr)>) -> Self {
+        Self {
+            socket,
+            outgoing_packet,
         }
-
-        //------//
-
-        Ok(Self { socket, outgoing })
     }
 
     /// `Err(_)` <=> or :
-    /// - Outgoing has disconnected.
-    /// - Socket fatal error while sending (rare).
+    /// - Socket error.
+    /// - Channel disconnection.
     ///
-    /// Blocking <=> Waiting for messages.
+    /// Blocking <=> Wait for a packet.
     pub fn send(&mut self) -> Result<()> {
-        //------// Wait packet //------//
+        //------// Receive packet //------//
 
-        // Wait for a message from outgoing (fallible, blocking).
+        // Receive packet from `outgoing_packet` (fallible, blocking).
 
-        let (packet, client_addr) = self.outgoing.recv()?;
+        let (packet, client_addr) = self.outgoing_packet.recv()?;
 
         //------// Send packet //------//
 

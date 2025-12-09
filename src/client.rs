@@ -4,6 +4,7 @@
 //!
 //! Packet = Message
 
+mod handle;
 mod recv;
 mod send;
 
@@ -12,36 +13,38 @@ use std::{
     thread,
 };
 
-use bytes::Bytes;
+use bytes::BytesMut;
 use crossbeam::channel::{Receiver, Sender, bounded};
 
-use recv::Recv;
-use send::Send;
+use handle::Handler;
+use recv::UdpPacketReceiver;
+use send::UdpPacketSender;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-const MAX_MSG_SIZE: usize = 1024;
+const CHANNELS_CAPACITY: usize = 64;
 
 pub struct Client {
-    // socket
     socket: UdpSocket,
-
-    // channels
-    pub incoming: Option<Receiver<Bytes>>,
-    pub outgoing: Option<Sender<Bytes>>,
-
-    // threads
-    recv: Option<thread::JoinHandle<()>>,
-    send: Option<thread::JoinHandle<()>>,
+    incoming_message: Option<Receiver<BytesMut>>,
+    outgoing_message: Option<Sender<BytesMut>>,
 }
 
 impl Client {
+    pub fn incoming_message(&mut self) -> Option<&mut Receiver<BytesMut>> {
+        self.incoming_message.as_mut()
+    }
+
+    pub fn outgoing_message(&mut self) -> Option<&mut Sender<BytesMut>> {
+        self.outgoing_message.as_mut()
+    }
+
     /// Err(_) <=> Fail to bind socket.
     pub fn new(port: u16) -> Result<Self> {
-        //------// Bind socket //------//
+        //------// Socket //------//
 
-        // Create a new socket bound to LOCALHOST with `port` (fallible).
+        // Bind UDP socket (fallible).
 
         let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))?;
 
@@ -49,15 +52,13 @@ impl Client {
 
         Ok(Self {
             socket,
-            recv: None,
-            send: None,
-            incoming: None,
-            outgoing: None,
+            incoming_message: None,
+            outgoing_message: None,
         })
     }
 
     /// `Err(_)` <=> or :
-    /// - Fail to connect to serve `addr`.
+    /// - Fail to connect to `addr`.
     /// - Fail to clone socket.
     pub fn connect(&mut self, addr: impl ToSocketAddrs) -> Result<()> {
         //------// Connect //------//
@@ -70,32 +71,44 @@ impl Client {
         let recv_socket = self.socket.try_clone()?;
         let send_socket = self.socket.try_clone()?;
 
-        //------// Shared resources //------//
+        //------// Channels //------//
 
-        // channels
-        let (incoming_s, incoming_r) = bounded(64);
-        let (outgoing_s, outgoing_r) = bounded(64);
+        let incoming_packet = bounded(CHANNELS_CAPACITY);
+        let outgoing_packet = bounded(CHANNELS_CAPACITY);
+        let incoming_message = bounded(CHANNELS_CAPACITY);
+        let outgoing_message = bounded(CHANNELS_CAPACITY);
 
         //------// Threads //------//
 
-        // Create Recv & Send.
-        //
-        // Unwraps : Socket is bind to IPv4 localhost.
-
-        let mut recv = Recv::new(recv_socket, MAX_MSG_SIZE, incoming_s).unwrap();
-        let recv = thread::spawn(move || {
+        let mut receiver = UdpPacketReceiver::new(recv_socket, incoming_packet.0);
+        thread::spawn(move || {
             loop {
-                match recv.recv() {
+                match receiver.recv() {
                     Ok(_) => continue,
                     Err(_) => break,
                 }
             }
         });
 
-        let mut send = Send::new(send_socket, outgoing_r).unwrap();
-        let send = thread::spawn(move || {
+        let mut sender = UdpPacketSender::new(send_socket, outgoing_packet.1);
+        thread::spawn(move || {
             loop {
-                match send.send() {
+                match sender.send() {
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut handler = Handler::new(
+            incoming_packet.1,
+            outgoing_message.1,
+            incoming_message.0,
+            outgoing_packet.0,
+        );
+        thread::spawn(move || {
+            loop {
+                match handler.handle() {
                     Ok(_) => continue,
                     Err(_) => break,
                 }
@@ -104,10 +117,8 @@ impl Client {
 
         //------//
 
-        self.incoming = Some(incoming_r);
-        self.outgoing = Some(outgoing_s);
-        self.recv = Some(recv);
-        self.send = Some(send);
+        self.incoming_message = Some(incoming_message.1);
+        self.outgoing_message = Some(outgoing_message.0);
 
         Ok(())
     }
