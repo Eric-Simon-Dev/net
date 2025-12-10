@@ -1,15 +1,13 @@
-//! Server-side.
+//! Client-side network logic.
 //!
-//! ## Terminology
-//!
-//! Packet = Message
+//! Provide `Client` structure.
 
 mod handle;
 mod recv;
 mod send;
 
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{ToSocketAddrs, UdpSocket},
     thread,
 };
 
@@ -25,6 +23,30 @@ type Result<T> = std::result::Result<T, Error>;
 
 const CHANNELS_CAPACITY: usize = 64;
 
+/// ## Usage
+///
+/// ### Initialization
+///
+/// ```ignore
+/// // create
+/// let mut client = Client::new("0:1234")?;
+///
+/// // connect
+/// client.connect("256.0.0.4:4567")?;
+/// ```
+///
+/// ### Sending & Receiving
+///
+/// Based on 2 ergonomic crates : `crossbeam` and `bytes`.
+///
+/// ```ignore
+/// // example
+/// let msgs = client.incoming()?.try_iter().collect();
+///
+/// // other example
+/// let timeout = Duration::from_millis(10);
+/// client.outgoing()?.send_timeout(msg, timeout);
+/// ```
 pub struct Client {
     socket: UdpSocket,
     incoming_message: Option<Receiver<BytesMut>>,
@@ -32,21 +54,23 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn incoming_message(&mut self) -> Option<&mut Receiver<BytesMut>> {
+    /// `None` <=> Self is not connected (may have lost connection).
+    pub fn incoming(&mut self) -> Option<&mut Receiver<BytesMut>> {
         self.incoming_message.as_mut()
     }
 
-    pub fn outgoing_message(&mut self) -> Option<&mut Sender<BytesMut>> {
+    /// `None` <=> Self is not connected (may have lost connection).
+    pub fn outgoing(&mut self) -> Option<&mut Sender<BytesMut>> {
         self.outgoing_message.as_mut()
     }
 
-    /// Err(_) <=> Fail to bind socket.
-    pub fn new(port: u16) -> Result<Self> {
+    /// Err(_) <=> Fail to bind UDP socket.
+    pub fn new(addr: impl ToSocketAddrs) -> Result<Self> {
         //------// Socket //------//
 
         // Bind UDP socket (fallible).
 
-        let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))?;
+        let socket = UdpSocket::bind(addr)?;
 
         //------//
 
@@ -61,11 +85,11 @@ impl Client {
     /// - Fail to connect to `addr`.
     /// - Fail to clone socket.
     pub fn connect(&mut self, addr: impl ToSocketAddrs) -> Result<()> {
-        //------// Connect //------//
+        //------// Socket //------//
 
         // Connect to `addr` (fallible).
         //
-        // Clone socket once connected (fallible).
+        // Clone socket (fallible).
 
         self.socket.connect(addr)?;
         let recv_socket = self.socket.try_clone()?;

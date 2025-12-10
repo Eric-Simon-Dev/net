@@ -13,7 +13,7 @@ use clients::Clients;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-/// Interface between UDP packets and messages.
+/// Interface between UDP packets and messages (incoming & outgoing).
 ///
 /// Apply transport protocols.
 ///
@@ -32,7 +32,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct Handler {
     clients: Clients,
 
-    // channels
+    //------// Channels //------//
     incoming_packet: Receiver<(BytesMut, SocketAddr)>,
     outgoing_message: Receiver<(BytesMut, usize)>,
     outgoing_packet: Sender<(BytesMut, SocketAddr)>,
@@ -72,9 +72,10 @@ impl Handler {
 
     /// `Err(_)` <=> Channel disconnection.
     ///
-    /// Try add client if client unknown.
-    /// Drop packet if not possible.
+    /// Client unknown => Try adding client, else drop packet.
     fn handle_incoming_packet(&mut self, packet: BytesMut, client_addr: SocketAddr) -> Result<()> {
+        //------// Client handling //------//
+
         let client_index = match self.clients.addr_to_index(client_addr) {
             Some(client_index) => client_index,
             None => match self.clients.add(client_addr) {
@@ -83,20 +84,34 @@ impl Handler {
             },
         };
 
-        self.incoming_message.send((packet, client_index))?;
+        //------// Conversion : Packet -> Message //------//
+
+        let message = packet;
+
+        //------//
+
+        self.incoming_message.send((message, client_index))?;
 
         Ok(())
     }
 
     /// `Err(_)` <=> Channel disconnection.
     ///
-    /// Drop message if client unknown.
+    /// Client unknown => Drop message.
     fn handle_outgoing_message(&mut self, message: BytesMut, client_index: usize) -> Result<()> {
+        //------// Client handling //------//
+
         let Some(client_addr) = self.clients.index_to_addr(client_index) else {
             return Ok(());
         };
 
-        self.outgoing_packet.send((message, client_addr))?;
+        //------// Conversion : Message -> Packet //------//
+
+        let packet = message;
+
+        //------//
+
+        self.outgoing_packet.send((packet, client_addr))?;
 
         Ok(())
     }

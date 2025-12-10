@@ -1,9 +1,13 @@
+//! Server-side network logic.
+//!
+//! Provide `Client` structure and `CLIENT_CAPACITY` constant.
+
 mod handle;
 mod recv;
 mod send;
 
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    net::{ToSocketAddrs, UdpSocket},
     thread,
 };
 
@@ -14,36 +18,78 @@ use handle::Handler;
 use recv::UdpPacketReceiver;
 use send::UdpPacketSender;
 
-pub use handle::clients::CLIENT_CAPACITY;
-
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-const CHANNELS_CAPACITY: usize = 64;
+pub use handle::clients::CLIENT_CAPACITY;
+const CHANNELS_CAPACITY: usize = 256;
 
+/// ## Usage
+///
+/// ### Initialization
+///
+/// ```ignore
+/// // create
+/// let mut server = Server::new("0:4567")?;
+///
+/// // connect
+/// server.listen()?;
+/// ```
+///
+/// ### Sending & Receiving
+///
+/// Based on 2 ergonomic crates : `crossbeam` and `bytes`.
+///
+/// ```ignore
+/// // example
+/// let msgs = server.incoming()?.try_iter().collect();
+///
+/// // other example
+/// let timeout = Duration::from_millis(10);
+/// server.outgoing()?.send_timeout(msg, timeout);
+/// ```
 pub struct Server {
-    incoming_message: Receiver<(BytesMut, usize)>,
-    outgoing_message: Sender<(BytesMut, usize)>,
+    socket: UdpSocket,
+    incoming_message: Option<Receiver<(BytesMut, usize)>>,
+    outgoing_message: Option<Sender<(BytesMut, usize)>>,
 }
 
 impl Server {
-    pub fn incoming_message(&mut self) -> &mut Receiver<(BytesMut, usize)> {
-        &mut self.incoming_message
+    /// `None` <=> Self is not listening (may have encounter a problem).
+    pub fn incoming(&mut self) -> Option<&mut Receiver<(BytesMut, usize)>> {
+        self.incoming_message.as_mut()
     }
 
-    pub fn outgoing_message(&mut self) -> &mut Sender<(BytesMut, usize)> {
-        &mut self.outgoing_message
+    /// `None` <=> Self is not listening (may have encounter a problem).
+    pub fn outgoing(&mut self) -> Option<&mut Sender<(BytesMut, usize)>> {
+        self.outgoing_message.as_mut()
     }
 
-    /// Err(_) <=> Fail to bind or clone UDP socket.
-    pub fn new(port: u16) -> Result<Self> {
+    /// Err(_) <=> Fail to bind UDP socket.
+    pub fn new(addr: impl ToSocketAddrs) -> Result<Self> {
         //------// Socket //------//
 
-        // Bind and clone UDP socket (fallible).
+        // Bind UDP socket (fallible).
 
-        let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))?;
-        let recv_socket = socket.try_clone()?;
-        let send_socket = socket;
+        let socket = UdpSocket::bind(addr)?;
+
+        //------//
+
+        Ok(Self {
+            socket,
+            incoming_message: None,
+            outgoing_message: None,
+        })
+    }
+
+    /// `Err(_)` <=> Fail to clone socket.
+    pub fn listen(&mut self) -> Result<()> {
+        //------// Socket //------//
+
+        // Clone socket (fallible).
+
+        let recv_socket = self.socket.try_clone()?;
+        let send_socket = self.socket.try_clone()?;
 
         //------// Channels //------//
 
@@ -91,9 +137,9 @@ impl Server {
 
         //------//
 
-        Ok(Self {
-            incoming_message: incoming_message.1,
-            outgoing_message: outgoing_message.0,
-        })
+        self.incoming_message = Some(incoming_message.1);
+        self.outgoing_message = Some(outgoing_message.0);
+
+        Ok(())
     }
 }

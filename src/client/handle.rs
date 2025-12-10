@@ -7,7 +7,7 @@ use crossbeam::{
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-/// Interface between UDP packets and messages.
+/// Interface between UDP packets and messages (incoming & outgoing).
 ///
 /// Apply transport protocols.
 ///
@@ -24,7 +24,7 @@ type Result<T> = std::result::Result<T, Error>;
 /// }
 /// ```
 pub struct Handler {
-    // channels
+    //------// Channels //------//
     incoming_packet: Receiver<BytesMut>,
     outgoing_message: Receiver<BytesMut>,
     incoming_message: Sender<BytesMut>,
@@ -61,15 +61,27 @@ impl Handler {
 
     /// `Err(_)` <=> Channel disconnection.
     fn handle_incoming_packet(&mut self, packet: BytesMut) -> Result<()> {
+        //------// Conversion : Packet -> Message //------//
+
         let message = packet;
+
+        //------//
+
         self.incoming_message.send(message)?;
+
         Ok(())
     }
 
     /// `Err(_)` <=> Channel disconnection.
     fn handle_outgoing_message(&mut self, message: BytesMut) -> Result<()> {
+        //------// Conversion : Message -> Packet //------//
+
         let packet = message;
+
+        //------//
+
         self.outgoing_packet.send(packet)?;
+
         Ok(())
     }
 }

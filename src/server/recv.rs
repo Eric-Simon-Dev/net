@@ -10,7 +10,7 @@ const REALLOCATION_CAPACITY: usize = 1_048_576; // = 2^20
 const MAX_PACKET_SIZE: usize = 1024;
 
 /// Receive UDP packets :
-/// 1. Receive/Buffer them.
+/// 1. Receive/Buffer (It's the same action) them.
 /// 2. Send them through `incoming_packet`.
 ///
 /// ## Usage
@@ -25,6 +25,15 @@ const MAX_PACKET_SIZE: usize = 1024;
 ///     }
 /// }
 /// ```
+////////////////////////////////////////////////////////////////////////////////////
+//
+// Buffering :
+//
+// Packets are buffered in front.
+// Their ownership can then be extracted (as `BytesMut`), reducing buffer size.
+// Once the packet owns its data (but still same place in memory), it can be sent.
+// When the packet is dropped, data is freed.
+// 
 pub struct UdpPacketReceiver {
     socket: UdpSocket,
     buffer: BytesMut,
@@ -46,7 +55,7 @@ impl UdpPacketReceiver {
     ///
     /// Blocks <=> or :
     /// - Wait for a packet.
-    /// - Wait for channel to have space.
+    /// - Wait for `incoming_packet` to have space.
     pub fn recv(&mut self) -> Result<()> {
         //------// Receive/Buffer packet //------//
 

@@ -1,64 +1,63 @@
-//! Network library.
+//! RUDP network library.
 //!
-//! ## Why customizing UDP ?
-//!
-//! UDP is one of the fastest protocol.
-//!
-//! Its guarantees are :
-//! - Integrity (no errors).
-//! - Boundaries (no split or merge of packets).
-//!
-//! Its non-guarantees are :
-//! - Delivery
-//! - Order
-//! - Non-duplication (may be duplicate to different paths to maximize chances of arrival).
-//!
-//! Because of performance, it's sometimes better to customize UDP and not rely on TCP.
-//!
-//! ## IPV4
-//!
-//! With a single socket bind to an IPv4 address. It can only send and receive IPv4 packets.
-//! To do IPv4 and IPv6, we need :
-//! - 2 sockets (one for each).
-//! - a single IPv6 socket with dual-stack enabled (will mapped IPv4 to IPv6, not default).
-//!
-//! Mine is only IPv4.
-//!
-//! ## Protocols
-//!
-//! Custom UDP-based protocols :
-//! - Raw : No additional guarantees.
-//! - Ack : Answer with an acknoledgment.
-//!
-//! ## Buffering
-//!
-//! Packets are stored in `bytes::Bytes`.
-//!
-//! `Bytes` can be split without copying.
-//! The 2 resulting `Bytes` are then *contiguous in memory* (unless they grow).
-//! This allow a nice suballocation stategy :
-//! 1. Allocate big buffer "a" : `aaaaaaaaaaaaaaaa` (16 bytes of a)
-//! 2. Fill beginning and split : `bbbaaaaaaaaaaaaa`
-//! 3. Again, again : `bbbccccccddddaaa`
-//! 4. If no more capacity in "a", reallocate somewhere else.
-//! "b", "c", "d" can be passed with ownership and will drop when no longer needed.
-//!
-//! ## Channels
-//!
-//! `Bytes` are passed though `crossbeam` channels
-//! which are high performance and multithread-friendly.
+//! Uses 3 threads for networking :
+//! - Receiver : Receive and buffer incoming UDP packets.
+//! - Sender : Send outgoing UDP packets.
+//! - Handler : Interface between App and Receiver/Sender. Handle RUDP protocol logic.
 //!
 //! ## Usage
 //!
-//! Send/Recv using channels, update network entity
+//! Provide `client` and `server` modules to use
+//! depending on the network entity needed.
 //!
-
-//! ## Terminology
+//! Channels are used to send and receive messages using :
+//! - `crossbeam::channel::{Sender, Receiver}` : Flexible, Efficient, Multi-thread channels.
+//! - `bytes::BytesMut` data pointers : Ergonomic, Multi-thread.
 //!
-//! Packet = Data from the network.
-//! Message = Data that passes the protocols. Consumable by the app.
+//! These structures are ergonomic and used in `tokio` (very serious crate).
+//!
+//! ## Memos
+//!
+//! ### TCP/UDP/RUDP
+//!
+//! Both are standard protocol buid on top of IP.
+//!
+//! TCP guarantees :
+//! - Integrity : No corrupted payload (resend).
+//! - Non-duplication : Single message sent => Single message received (using sequence numbers).
+//! - Delivery : Notify sender of delivery (using acknoledgments).
+//! - Order : Messages arrive in the order they were sent (using sequence numbers).
+//!
+//! UDP guarantees :
+//! - Integrity.
+//! - Boundaries : Packets are not split or merged (unlike TCP).
+//!
+//! In some scenarios, such as gaming, we want more flexibility. Examples :
+//! - If we want Non-duplication or delivery but don't care about order ?
+//! - If we want acknoledgment but custom resend rules (to prioritize other packets maybe) ?
+//! - Etc.
+//!
+//! To do that we usually implement Reliable UDP (RUDP) : A protocol implemented on top of UDP.
+//!
+//! Most of the times, an RUDP protocol implements some degree of reliability (hence the "Reliable")
+//! but it can designates any protocol on top of UDP *in my opinion*.
+//!
+//! ### IPv4/IPv6
+//!
+//! Ideally we want to handle both IPv4 and IPv6
+//! to get maximum player base.
+//!
+//! To do that we can :
+//! - Use a dual-stack socket : Can handle both version, but not always available.
+//! - Use one socket for each version. It's the most common.
+//!
+//! For now it's single socket and server/client IP versions must match (both v4 or both v6).
 
-// Test
+// ## Terminology
+//
+// Packet = Data from the network.
+//
+// Message = Data that passes the protocols. Consumable by the app.
 
 pub mod client;
 pub mod server;

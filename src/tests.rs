@@ -1,37 +1,44 @@
 use bytes::BytesMut;
 
-#[test]
-fn server_client_connection() {
-    use crate::{client::Client, server::Server};
+use crate::{client::Client, server::Server};
 
-    let _server = Server::new(12012).unwrap();
-    let mut client = Client::new(12013).unwrap();
+#[test]
+fn connection() {
+    let mut server = Server::new("0:12012").unwrap();
+    let mut client = Client::new("0:12013").unwrap();
+    server.listen().unwrap();
     client.connect("0:12012").unwrap();
 }
 
 #[test]
 fn multiple_exchanges() {
-    use crate::{client::Client, server::Server};
-
-    let mut server = Server::new(12014).unwrap();
-    let mut client = Client::new(12015).unwrap();
+    // create
+    let mut server = Server::new("0:12014").unwrap();
+    let mut client = Client::new("0:12015").unwrap();
+    server.listen().unwrap();
     client.connect("0:12014").unwrap();
 
-    // first send
+    // client : first send
     let msg = BytesMut::zeroed(1);
-    client.outgoing_message().unwrap().send(msg).unwrap();
+    client.outgoing().unwrap().send(msg).unwrap();
 
-    // exchange and add 1 each return
+    // server & client : recv, add 1, return (16 times)
     for _ in 0..16 {
-        let (mut msg, client_index) = server.incoming_message().recv().unwrap();
+        let (mut msg, client_index) = server.incoming().unwrap().recv().unwrap();
         msg[0] += 1;
-        server.outgoing_message().send((msg, client_index)).unwrap();
+        server
+            .outgoing()
+            .unwrap()
+            .send((msg, client_index))
+            .unwrap();
 
-        let mut msg = client.incoming_message().unwrap().recv().unwrap();
+        let mut msg = client.incoming().unwrap().recv().unwrap();
         msg[0] += 1;
-        client.outgoing_message().unwrap().send(msg).unwrap();
+        client.outgoing().unwrap().send(msg).unwrap();
     }
 
-    let (msg, _) = server.incoming_message().recv().unwrap();
+    // server: last recv
+    let (msg, _) = server.incoming().unwrap().recv().unwrap();
+
     assert_eq!(msg[0], 32);
 }
