@@ -25,75 +25,46 @@ const CHANNELS_CAPACITY: usize = 64;
 
 /// ## Usage
 ///
-/// ### Initialization
-///
 /// ```ignore
-/// // create
-/// let mut client = Client::new("0:1234")?;
+/// // Initialization.
+/// let client = Client::new("0:1234", "256.0.0.4:4567")?;
 ///
-/// // connect
-/// client.connect("256.0.0.4:4567")?;
-/// ```
-///
-/// ### Sending & Receiving
-///
-/// Based on 2 ergonomic crates : `crossbeam` and `bytes`.
-///
-/// ```ignore
-/// // example
-/// let msgs = client.incoming()?.try_iter().collect();
-///
-/// // other example
-/// let timeout = Duration::from_millis(10);
-/// client.outgoing()?.send_timeout(msg, timeout);
+/// // Send/Recv messages using `crossbeam` channels
+/// // passing `bytes` pointers.
+/// client.incoming();
+/// client.outgoing();
 /// ```
 pub struct Client {
-    socket: UdpSocket,
-    incoming_message: Option<Receiver<BytesMut>>,
-    outgoing_message: Option<Sender<BytesMut>>,
+    incoming_message: Receiver<BytesMut>,
+    outgoing_message: Sender<BytesMut>,
 }
 
 impl Client {
-    /// `None` <=> Self is not connected (may have lost connection).
-    pub fn incoming(&mut self) -> Option<&mut Receiver<BytesMut>> {
-        self.incoming_message.as_mut()
+    pub fn incoming(&mut self) -> &mut Receiver<BytesMut> {
+        &mut self.incoming_message
     }
 
-    /// `None` <=> Self is not connected (may have lost connection).
-    pub fn outgoing(&mut self) -> Option<&mut Sender<BytesMut>> {
-        self.outgoing_message.as_mut()
+    pub fn outgoing(&mut self) -> &mut Sender<BytesMut> {
+        &mut self.outgoing_message
     }
 
-    /// Err(_) <=> Fail to bind UDP socket.
-    pub fn new(addr: impl ToSocketAddrs) -> Result<Self> {
+    /// Err(_) <=> or :
+    /// - Fail to bind UDP socket.
+    /// - Fail to connect UDP socket to `server_addr`.
+    /// - Fail to clone UDP socket.
+    pub fn new(addr: impl ToSocketAddrs, server_addr: impl ToSocketAddrs) -> Result<Self> {
         //------// Socket //------//
 
         // Bind UDP socket (fallible).
-
-        let socket = UdpSocket::bind(addr)?;
-
-        //------//
-
-        Ok(Self {
-            socket,
-            incoming_message: None,
-            outgoing_message: None,
-        })
-    }
-
-    /// `Err(_)` <=> or :
-    /// - Fail to connect to `addr`.
-    /// - Fail to clone socket.
-    pub fn connect(&mut self, addr: impl ToSocketAddrs) -> Result<()> {
-        //------// Socket //------//
-
-        // Connect to `addr` (fallible).
+        //
+        // Connect to `server_addr` (fallible).
         //
         // Clone socket (fallible).
 
-        self.socket.connect(addr)?;
-        let recv_socket = self.socket.try_clone()?;
-        let send_socket = self.socket.try_clone()?;
+        let socket = UdpSocket::bind(addr)?;
+        socket.connect(server_addr)?;
+        let recv_socket = socket.try_clone()?;
+        let send_socket = socket.try_clone()?;
 
         //------// Channels //------//
 
@@ -141,9 +112,9 @@ impl Client {
 
         //------//
 
-        self.incoming_message = Some(incoming_message.1);
-        self.outgoing_message = Some(outgoing_message.0);
-
-        Ok(())
+        Ok(Self {
+            incoming_message: incoming_message.1,
+            outgoing_message: outgoing_message.0,
+        })
     }
 }

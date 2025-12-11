@@ -33,7 +33,7 @@ const MAX_PACKET_SIZE: usize = 1024;
 // Their ownership can then be extracted (as `BytesMut`), reducing buffer size.
 // Once the packet owns its data (but still same place in memory), it can be sent.
 // When the packet is dropped, data is freed.
-// 
+//
 pub struct UdpPacketReceiver {
     socket: UdpSocket,
     buffer: BytesMut,

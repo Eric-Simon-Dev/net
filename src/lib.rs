@@ -55,9 +55,26 @@
 
 // ## Terminology
 //
-// Packet = Data from the network.
+// Packet (UDP) = Raw data for network.
 //
-// Message = Data that passes the protocols. Consumable by the app.
+// Message = Data that have passed the protocols. Consumable by the app.
+//
+// ## Channel propagation
+//
+// Channels are used as dominos to propagate errors and shutdowns. Examples :
+//
+// Drop Self
+// => Channel disconnection on Handler
+// => Drop Handler
+// => Channel disconnection on Recv & Send
+// => Drop Recv & Drop Send
+//
+// Error on Recv
+// => Drop Recv
+// => Channel disconnection on Handler
+// => Drop Handler
+// => Channel disconnection on Send & Self
+// => Drop Send & Return error `Disconnected` when using Self
 
 pub mod client;
 pub mod server;
