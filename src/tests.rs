@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 
-use crate::{client::Client, server::Server};
+use crate::{Client, Server};
 
 #[test]
 fn connection() {

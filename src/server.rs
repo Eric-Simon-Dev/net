@@ -29,41 +29,32 @@ type Result<T> = std::result::Result<T, Error>;
 pub use handle::clients::CLIENT_CAPACITY;
 const CHANNELS_CAPACITY: usize = 256;
 
-/// ## Usage
-///
-/// Send & Receive message with `crossbeam::{Receiver, Sender}`.
-/// Create & Consume messages with `bytes::{Bytes, BytesMut}`.
-///
-/// ```ignore
-/// server.incoming();
-/// server.outgoing();
-/// ```
+/// Messages are sent and received using
+/// "crossbeam" channels and "bytes" pointers.
+/// 
+/// Channels :
+/// - `incoming()`
+/// - `outgoing()`
 pub struct Server {
     incoming_message: Receiver<(BytesMut, usize)>,
     outgoing_message: Sender<(BytesMut, usize)>,
 }
 
 impl Server {
-    /// Channel receiver for incoming messages.
-    ///
-    /// Message = (data, client_index).
+    /// Format = (data, client_index).
     pub fn incoming(&mut self) -> &mut Receiver<(BytesMut, usize)> {
         &mut self.incoming_message
     }
 
-    /// Channel sender for outgoing messages.
-    ///
-    /// Message = (data, client_index).
+    /// Format = (data, client_index).
     pub fn outgoing(&mut self) -> &mut Sender<(BytesMut, usize)> {
         &mut self.outgoing_message
     }
 
-    /// Bind a UDP socket to `addr`.
-    /// Spawns threads to carry networking.
+    /// Try binding `addr` to a UDP socket.
+    /// Spawn threads to carry networking.
     ///
-    /// Err(_) <=> or :
-    /// - Fail to bind UDP socket.
-    /// - Fail to clone UDP socket.
+    /// Err(_) <=> Fail to bind/clone UDP socket.
     pub fn new(addr: impl ToSocketAddrs) -> Result<Server> {
         //------// Socket //------//
 

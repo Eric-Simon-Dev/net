@@ -35,11 +35,13 @@ impl UdpPacketSender {
         }
     }
 
+    /// Send a packet (blocking).
+    /// 
+    /// Blocking <=> Wait channel for a packet to send.
+    /// 
     /// `Err(_)` <=> or :
     /// - Socket error.
     /// - Channel disconnection.
-    ///
-    /// Blocking <=> Wait for a packet.
     pub fn send(&mut self) -> Result<()> {
         //------// Receive packet //------//
 

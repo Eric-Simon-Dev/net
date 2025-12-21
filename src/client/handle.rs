@@ -46,6 +46,10 @@ impl Handler {
         }
     }
 
+    /// Handle network protocols (blocking).
+    /// 
+    /// Blocks <=> Wait channels for a packet to handle.
+    /// 
     /// `Err(_)` <=> Channel disconnection.
     pub fn handle(&mut self) -> Result<()> {
         select! {

@@ -27,16 +27,12 @@ type Result<T> = std::result::Result<T, Error>;
 
 const CHANNELS_CAPACITY: usize = 256;
 
-/// ## Usage
-///
-/// Send & Receive with `crossbeam::{Receiver, Sender}`.
-/// Create & Consume messages with `bytes::{Bytes, BytesMut}`.
-///
-/// ```ignore
-/// // Channels
-/// client.incoming();
-/// client.outgoing();
-/// ```
+/// Messages are sent and received using
+/// "crossbeam" channels and "bytes" pointers.
+/// 
+/// Channels :
+/// - `incoming()`
+/// - `outgoing()`
 pub struct Client {
     incoming_message: Receiver<BytesMut>,
     outgoing_message: Sender<BytesMut>,
@@ -51,13 +47,11 @@ impl Client {
         &mut self.outgoing_message
     }
 
-    /// Bind a UDP socket to `addr` and directed to `server_addr`.
+    /// Try binding `addr` to a UDP socket.
+    /// Try connecting it to `server_addr`.
     /// Spawn threads to carry networking.
     ///
-    /// Err(_) <=> or :
-    /// - Fail to bind UDP socket.
-    /// - Fail to connect UDP socket to `server_addr`.
-    /// - Fail to clone UDP socket.
+    /// Err(_) <=> Fail to bind/connect/clone UDP socket.
     pub fn new(addr: impl ToSocketAddrs, server_addr: impl ToSocketAddrs) -> Result<Client> {
         //------// Socket //------//
 

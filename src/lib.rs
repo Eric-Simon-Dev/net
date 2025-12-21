@@ -75,8 +75,11 @@
 // => Channel disconnection on Send & Self
 // => Drop Send & Return error `Disconnected` when using Self
 
-pub mod client;
-pub mod server;
+mod client;
+mod server;
+
+pub use client::Client;
+pub use server::{CLIENT_CAPACITY, Server};
 
 #[cfg(test)]
 mod tests;
