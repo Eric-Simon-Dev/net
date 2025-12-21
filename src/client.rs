@@ -29,21 +29,23 @@ const CHANNELS_CAPACITY: usize = 256;
 
 /// Messages are sent and received using
 /// "crossbeam" channels and "bytes" pointers.
-/// 
+///
 /// Channels :
 /// - `incoming()`
 /// - `outgoing()`
 pub struct Client {
-    incoming_message: Receiver<BytesMut>,
-    outgoing_message: Sender<BytesMut>,
+    incoming_message: Receiver<(BytesMut, u8)>,
+    outgoing_message: Sender<(BytesMut, u8)>,
 }
 
 impl Client {
-    pub fn incoming(&mut self) -> &mut Receiver<BytesMut> {
+    /// Format = (data, channel).
+    pub fn incoming(&mut self) -> &mut Receiver<(BytesMut, u8)> {
         &mut self.incoming_message
     }
 
-    pub fn outgoing(&mut self) -> &mut Sender<BytesMut> {
+    /// Format = (data, channel).
+    pub fn outgoing(&mut self) -> &mut Sender<(BytesMut, u8)> {
         &mut self.outgoing_message
     }
 
@@ -98,8 +100,8 @@ impl Client {
         let mut handler = Handler::new(
             incoming_packet.1,
             outgoing_message.1,
-            incoming_message.0,
             outgoing_packet.0,
+            incoming_message.0,
         );
         thread::spawn(move || {
             loop {

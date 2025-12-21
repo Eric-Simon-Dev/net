@@ -16,21 +16,24 @@ fn multiple_exchanges() {
 
     // client : first send
     let msg = BytesMut::zeroed(1);
-    client.outgoing().send(msg).unwrap();
+    client.outgoing().send((msg, 0)).unwrap();
 
     // server & client : recv, add 1, return (16 times)
     for _ in 0..16 {
-        let (mut msg, client_index) = server.incoming().recv().unwrap();
+        let (mut msg, client_index, channel) = server.incoming().recv().unwrap();
         msg[0] += 1;
-        server.outgoing().send((msg, client_index)).unwrap();
+        server
+            .outgoing()
+            .send((msg, client_index, channel))
+            .unwrap();
 
-        let mut msg = client.incoming().recv().unwrap();
+        let (mut msg, channel) = client.incoming().recv().unwrap();
         msg[0] += 1;
-        client.outgoing().send(msg).unwrap();
+        client.outgoing().send((msg, channel)).unwrap();
     }
 
     // server: last recv
-    let (msg, _) = server.incoming().recv().unwrap();
+    let (msg, _, _) = server.incoming().recv().unwrap();
 
     assert_eq!(msg[0], 32);
 }

@@ -50,11 +50,11 @@ impl UdpPacketReceiver {
     }
 
     /// Receive a packet (blocking).
-    /// 
+    ///
     /// Blocks <=> or :
     /// - Wait network for a packet to receive.
     /// - Wait for `incoming_packet` to have space.
-    /// 
+    ///
     /// `Err(_)` <=> or :
     /// - Socket error.
     /// - Channel disconnection.
