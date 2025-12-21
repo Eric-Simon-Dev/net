@@ -7,12 +7,12 @@
 //!
 //! ## Usage
 //!
-//! Provide `client` and `server` modules to use
+//! Provide `client` and `server` modules,
 //! depending on the network entity needed.
 //!
 //! Channels are used to send and receive messages using :
 //! - `crossbeam::channel::{Sender, Receiver}` : Flexible, Efficient, Multi-thread channels.
-//! - `bytes::BytesMut` data pointers : Ergonomic, Multi-thread.
+//! - `bytes::{Bytes, BytesMut}` data pointers : Ergonomic, Multi-thread.
 //!
 //! These structures are ergonomic and used in `tokio` (very serious crate).
 //!
@@ -55,9 +55,8 @@
 
 // ## Terminology
 //
-// Packet (UDP) = Raw data for network.
-//
-// Message = Data that have passed the protocols. Consumable by the app.
+// Packet = Network-aware data, meant for transport.
+// Message = Network-agnostic data, meant for the app.
 //
 // ## Channel propagation
 //

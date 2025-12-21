@@ -1,18 +1,18 @@
 use bytes::BytesMut;
 
-use crate::{client, server};
+use crate::{client::Client, server::Server};
 
 #[test]
 fn connection() {
-    let _server = server::listen("0:12012").unwrap();
-    let _client = client::connect("0:12013", "0:12013").unwrap();
+    let _server = Server::new("0:12012").unwrap();
+    let _client = Client::new("0:12013", "0:12013").unwrap();
 }
 
 #[test]
 fn multiple_exchanges() {
     // create
-    let mut server = server::listen("0:12014").unwrap();
-    let mut client = client::connect("0:12015", "0:12014").unwrap();
+    let mut server = Server::new("0:12014").unwrap();
+    let mut client = Client::new("0:12015", "0:12014").unwrap();
 
     // client : first send
     let msg = BytesMut::zeroed(1);
