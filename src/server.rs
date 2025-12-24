@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use bytes::Bytes;
+use bytes::BytesMut;
 use crossbeam::channel::{Receiver, Sender, bounded};
 
 use super::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
@@ -26,29 +26,16 @@ const RING_SIZE: usize = BUFFER_SIZE * 16;
 
 pub struct Server {
     socket: UdpSocket,
-    conf: Configuration,
 }
 
 //------// Constructor //------//
 
 impl Server {
     /// Create a server bound to `addr`.
-    pub fn new(addr: impl ToSocketAddrs, configuration: Configuration) -> io::Result<Server> {
+    pub fn new(addr: impl ToSocketAddrs) -> io::Result<Server> {
         Ok(Self {
             socket: UdpSocket::bind(addr)?,
-            conf: configuration,
         })
-    }
-}
-
-#[derive(Debug)]
-pub struct Configuration {
-    pub max_clients: usize,
-}
-
-impl Default for Configuration {
-    fn default() -> Self {
-        Self { max_clients: 256 }
     }
 }
 
@@ -128,7 +115,6 @@ impl Server {
         incoming_message: Sender<Message>,
     ) {
         let mut handler = Handler::new(
-            self.conf.max_clients,
             incoming_packet,
             outgoing_message,
             outgoing_packet,
@@ -153,7 +139,7 @@ impl Server {
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub data: Bytes,
+    pub data: BytesMut,
     pub client: ClientId,
     pub channel: u8,
     pub guarantees: Guarantees,
@@ -176,6 +162,6 @@ pub enum Guarantees {
 
 #[derive(Debug)]
 struct Packet {
-    data: Bytes,
+    data: BytesMut,
     addr: SocketAddr,
 }

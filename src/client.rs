@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use bytes::Bytes;
+use bytes::BytesMut;
 use crossbeam::channel::{Receiver, Sender, bounded};
 
 use super::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
@@ -146,7 +146,7 @@ impl Client {
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub data: Bytes,
+    pub data: BytesMut,
     pub channel: u8,
     pub guarantees: Guarantees,
 }
@@ -164,5 +164,5 @@ pub enum Guarantees {
 
 #[derive(Debug)]
 struct Packet {
-    data: Bytes,
+    data: BytesMut,
 }

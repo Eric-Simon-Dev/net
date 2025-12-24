@@ -117,7 +117,7 @@ impl Handler {
         };
 
         self.outgoing_buffer.put(data);
-        let data = self.outgoing_buffer.split().freeze();
+        let data = self.outgoing_buffer.split();
         self.outgoing_packet.send(Packet { data })?;
 
         //------// Resize buffer //------//

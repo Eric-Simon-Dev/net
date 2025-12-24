@@ -29,14 +29,13 @@ pub struct Handler {
 
 impl Handler {
     pub fn new(
-        max_clients: usize,
         incoming_packet: Receiver<Packet>,
         outgoing_message: Receiver<Message>,
         outgoing_packet: Sender<Packet>,
         incoming_message: Sender<Message>,
     ) -> Self {
         Self {
-            clients: Clients::new(max_clients),
+            clients: Clients::new(),
             outgoing_buffer: BytesMut::with_capacity(RING_SIZE),
             incoming_packet,
             outgoing_packet,
@@ -145,7 +144,7 @@ impl Handler {
         };
 
         self.outgoing_buffer.put(data);
-        let data = self.outgoing_buffer.split().freeze();
+        let data = self.outgoing_buffer.split();
         self.outgoing_packet.send(Packet { data, addr })?;
 
         //------// Resize buffer //------//

@@ -37,7 +37,7 @@ impl PacketReceiver {
 
         // Bytes out of buffer size bounds are discarded.
         let (data_len, addr) = self.socket.recv_from(&mut self.buffer)?;
-        let data = self.buffer.split_to(data_len).freeze();
+        let data = self.buffer.split_to(data_len);
         let packet = Packet { data, addr };
         self.incoming_packet.send(packet)?;
 

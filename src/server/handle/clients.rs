@@ -8,7 +8,6 @@ type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
 pub struct Clients {
-    max_clients: usize,
     addr_to_id: FxHashMap<SocketAddr, ClientId>,
     id_to_addr: FxHashMap<ClientId, SocketAddr>,
     next_id: usize,
@@ -17,11 +16,10 @@ pub struct Clients {
 //------// Constructor //------//
 
 impl Clients {
-    pub fn new(max_clients: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            max_clients,
-            addr_to_id: FxHashMap::with_capacity_and_hasher(max_clients, Default::default()),
-            id_to_addr: FxHashMap::with_capacity_and_hasher(max_clients, Default::default()),
+            addr_to_id: FxHashMap::with_hasher(Default::default()),
+            id_to_addr: FxHashMap::with_hasher(Default::default()),
             next_id: 0,
         }
     }
@@ -30,17 +28,12 @@ impl Clients {
 //------// Add & Remove //------//
 
 impl Clients {
-    /// `Err(_)` <=> or :
-    /// - Client max capacity reached.
-    /// - Client already registered.
+    /// `Err(_)` <=> Client already registered.
     pub fn add(&mut self, addr: SocketAddr) -> Result<ClientId> {
         //------// Check //------//
 
         if self.addr_to_id.contains_key(&addr) {
             return Err("client already registered".into());
-        }
-        if self.addr_to_id.len() == self.max_clients {
-            return Err("client max capacity reached".into());
         }
 
         //------// Add //------//
