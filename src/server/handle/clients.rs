@@ -2,87 +2,91 @@ use std::net::SocketAddr;
 
 use rustc_hash::FxHashMap;
 
+use super::ClientId;
+
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-pub const CLIENT_CAPACITY: usize = 256;
-
-/// Handle clients.
-///
-//////////////////////////////////////////////////////////////////////////
-//
-// Invariants : Hard to describe rigorously...
-// But indices must be coherent within structures.
-//
-// Ex: An index cannot be in `available_indices`
-// and in `addr_to_index`.
-//
-// Good thing is to check if all structures are updated when mutating.
-//
 pub struct Clients {
-    addr_to_index: FxHashMap<SocketAddr, usize>,
-    index_to_addr: Vec<Option<SocketAddr>>, // No need to hash.
-    available_indices: Vec<usize>,
+    max_clients: usize,
+    addr_to_id: FxHashMap<SocketAddr, ClientId>,
+    id_to_addr: FxHashMap<ClientId, SocketAddr>,
+    next_id: usize,
 }
 
+//------// Constructor //------//
+
 impl Clients {
-    pub fn new() -> Self {
+    pub fn new(max_clients: usize) -> Self {
         Self {
-            addr_to_index: FxHashMap::with_capacity_and_hasher(CLIENT_CAPACITY, Default::default()),
-            available_indices: (0..CLIENT_CAPACITY).rev().collect(),
-            index_to_addr: vec![None; CLIENT_CAPACITY],
+            max_clients,
+            addr_to_id: FxHashMap::with_capacity_and_hasher(max_clients, Default::default()),
+            id_to_addr: FxHashMap::with_capacity_and_hasher(max_clients, Default::default()),
+            next_id: 0,
         }
     }
+}
 
+//------// Add & Remove //------//
+
+impl Clients {
     /// `Err(_)` <=> or :
     /// - Client max capacity reached.
     /// - Client already registered.
-    pub fn add(&mut self, client_addr: SocketAddr) -> Result<usize> {
-        // Check client registration (fallible).
-        //
-        // Pop an available index (fallible).
-        //
-        // Add to mapping structures.
+    pub fn add(&mut self, addr: SocketAddr) -> Result<ClientId> {
+        //------// Check //------//
 
-        if self.addr_to_index.contains_key(&client_addr) {
+        if self.addr_to_id.contains_key(&addr) {
             return Err("client already registered".into());
         }
-
-        let Some(client_index) = self.available_indices.pop() else {
+        if self.addr_to_id.len() == self.max_clients {
             return Err("client max capacity reached".into());
-        };
+        }
 
-        self.addr_to_index.insert(client_addr, client_index);
-        self.index_to_addr[client_index] = Some(client_addr);
+        //------// Add //------//
 
-        Ok(client_index)
+        let id = self.generate_client_id();
+        self.addr_to_id.insert(addr, id);
+        self.id_to_addr.insert(id, addr);
+
+        //------//
+
+        Ok(id)
+    }
+
+    fn generate_client_id(&mut self) -> ClientId {
+        self.next_id += 1;
+        ClientId(self.next_id - 1)
     }
 
     /// `Err(_)` <=> Unknown client.
-    pub fn _remove(&mut self, client_index: usize) -> Result<()> {
-        // Fetch client address (fallible).
-        //
-        // Remove from mapping structures.
-        //
-        // Push client index to available indices.
+    pub fn _remove(&mut self, id: ClientId) -> Result<()> {
+        //------// Check //------//
 
-        let Some(client_addr) = self.index_to_addr[client_index] else {
+        if self.id_to_addr.contains_key(&id) {
             return Err("unknown client".into());
-        };
+        }
 
-        self.index_to_addr[client_index] = None;
-        self.addr_to_index.remove(&client_addr);
+        //------// Remove //------//
 
-        self.available_indices.push(client_index);
+        // UNWRAP : From earlier check.
+        let addr = self.id_to_addr.remove(&id).unwrap();
+        self.addr_to_id.remove(&addr);
+
+        //------//
 
         Ok(())
     }
+}
 
-    pub fn addr_to_index(&mut self, client_addr: SocketAddr) -> Option<usize> {
-        self.addr_to_index.get(&client_addr).copied()
+//------// Accessors //------//
+
+impl Clients {
+    pub fn addr_to_id(&mut self, addr: SocketAddr) -> Option<ClientId> {
+        self.addr_to_id.get(&addr).copied()
     }
 
-    pub fn index_to_addr(&mut self, client_index: usize) -> Option<SocketAddr> {
-        self.index_to_addr[client_index]
+    pub fn id_to_addr(&mut self, id: ClientId) -> Option<SocketAddr> {
+        self.id_to_addr.get(&id).copied()
     }
 }

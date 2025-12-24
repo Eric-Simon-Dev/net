@@ -1,62 +1,33 @@
 use std::net::UdpSocket;
 
-use bytes::BytesMut;
 use crossbeam::channel::Receiver;
+
+use super::Packet;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-/// Send UDP packets :
-/// 1. Receive them from `outgoing_packet`.
-/// 2. Send them.
-///
-/// ## Usage
-///
-/// Meant to be used in its own thread looping over `send()`.
-///
-/// ```ignore
-/// loop {
-///     match sender.send() {
-///         Ok(_) => continue,
-///         Err(_) => break,
-///     }
-/// }
-/// ```
-pub struct UdpPacketSender {
+pub struct PacketSender {
     socket: UdpSocket,
-    outgoing_packet: Receiver<BytesMut>,
+    outgoing_packet: Receiver<Packet>,
 }
 
-impl UdpPacketSender {
-    pub fn new(socket: UdpSocket, outgoing_packet: Receiver<BytesMut>) -> Self {
+impl PacketSender {
+    pub fn new(socket: UdpSocket, outgoing_packet: Receiver<Packet>) -> Self {
         Self {
             socket,
             outgoing_packet,
         }
     }
 
-    /// Send a packet (blocking).
-    ///
-    /// Blocking <=> Wait channel for a packet to send.
+    /// Block <=> Wait `outgoing_packet`.
     ///
     /// `Err(_)` <=> or :
-    /// - Socket error.
-    /// - Channel disconnection.
+    /// - `outgoing_packet` disconnect.
+    /// - `socket` fail while sending.
     pub fn send(&mut self) -> Result<()> {
-        //------// Receive packet //------//
-
-        // Receive packet from `outgoing_packet` (fallible, blocking).
-
-        let packet = self.outgoing_packet.recv()?;
-
-        //------// Send packet //------//
-
-        // Send packet (fallible).
-
-        self.socket.send(&packet)?;
-
-        //------//
-
+        let Packet { data } = self.outgoing_packet.recv()?;
+        self.socket.send(&data)?;
         Ok(())
     }
 }

@@ -1,152 +1,161 @@
 pub mod clients;
 
-use std::net::SocketAddr;
-
 use bytes::{BufMut, BytesMut};
 use crossbeam::{
     channel::{Receiver, Sender},
     select,
 };
 
+use super::{
+    BUFFER_SIZE, ClientId, Guarantees, MAX_PACKET_SIZE, Message, Packet, PacketType, RING_SIZE,
+};
 use clients::Clients;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-const REALLOCATION_CAPACITY: usize = 1_048_576; // = 2^20
-const REALLOCATION_THRESHOLD: usize = 1024;
-
-/// Interface between UDP packets and messages (incoming & outgoing).
-///
-/// Apply transport protocols.
-///
-/// ## Usage
-///
-/// Meant to be used in its own thread looping over `handle()`.
-///
-/// ```ignore
-/// loop {
-///     match handler.handle() {
-///         Ok(_) => continue,
-///         Err(_) => break,
-///     }
-/// }
-/// ```
 pub struct Handler {
     clients: Clients,
     outgoing_buffer: BytesMut,
 
     //------// Channels //------//
-    incoming_packet: Receiver<(BytesMut, SocketAddr)>,
-    outgoing_message: Receiver<(BytesMut, usize, u8)>,
-    outgoing_packet: Sender<(BytesMut, SocketAddr)>,
-    incoming_message: Sender<(BytesMut, usize, u8)>,
+    incoming_packet: Receiver<Packet>,
+    outgoing_message: Receiver<Message>,
+    outgoing_packet: Sender<Packet>,
+    incoming_message: Sender<Message>,
 }
+
+//------// Constructor //------//
 
 impl Handler {
     pub fn new(
-        incoming_packet: Receiver<(BytesMut, SocketAddr)>,
-        outgoing_message: Receiver<(BytesMut, usize, u8)>,
-        outgoing_packet: Sender<(BytesMut, SocketAddr)>,
-        incoming_message: Sender<(BytesMut, usize, u8)>,
+        max_clients: usize,
+        incoming_packet: Receiver<Packet>,
+        outgoing_message: Receiver<Message>,
+        outgoing_packet: Sender<Packet>,
+        incoming_message: Sender<Message>,
     ) -> Self {
         Self {
-            clients: Clients::new(),
-            outgoing_buffer: BytesMut::with_capacity(REALLOCATION_CAPACITY),
+            clients: Clients::new(max_clients),
+            outgoing_buffer: BytesMut::with_capacity(RING_SIZE),
             incoming_packet,
             outgoing_packet,
             incoming_message,
             outgoing_message,
         }
     }
+}
 
-    /// Handle network protocols (blocking).
+//------// Handling //------//
+
+impl Handler {
+    /// Block <=> Wait channels.
     ///
-    /// Blocks <=> Wait channels for a packet to handle.
-    ///
-    /// `Err(_)` <=> Channel disconnection.
+    /// `Err(_)` <=> Channel disconnect.
     pub fn handle(&mut self) -> Result<()> {
         select! {
             recv(self.incoming_packet) -> packet => {
-                let (packet, client_addr) = packet?;
-                self.handle_incoming_packet(packet, client_addr)?;
+                self.handle_incoming_packet(packet?)?;
             }
             recv(self.outgoing_message) -> message => {
-                let (message, client_index, channel) = message?;
-                self.handle_outgoing_message(message, client_index, channel)?;
+                self.handle_outgoing_message(message?)?;
             }
         }
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnection.
+    /// `Err(_)` <=> Channel disconnect.
     ///
     /// Client unknown => Try adding client, else drop packet.
-    fn handle_incoming_packet(
-        &mut self,
-        mut packet: BytesMut,
-        client_addr: SocketAddr,
-    ) -> Result<()> {
+    /// Packet type unknown => Drop packet.
+    fn handle_incoming_packet(&mut self, Packet { mut data, addr }: Packet) -> Result<()> {
         //------// Client handling //------//
 
-        let client_index = match self.clients.addr_to_index(client_addr) {
-            Some(client_index) => client_index,
-            None => match self.clients.add(client_addr) {
-                Ok(client_index) => client_index,
+        let client = match self.clients.addr_to_id(addr) {
+            Some(id) => id,
+            None => match self.clients.add(addr) {
+                Ok(id) => id,
                 Err(_) => return Ok(()),
             },
         };
 
         //------// Conversion : Packet -> Message //------//
 
-        // Extract header then truncate it to get message.
+        // Extract packet type (to know header format).
+        // Drop packet if unknown.
+        //
+        // Extract header, react to it and return (channel, guarantees).
 
-        let channel = packet[0];
-        let message = packet.split_off(1);
+        let packet_type_byte = data.split_to(1)[0];
+        let Ok(packet_type) = PacketType::try_from(packet_type_byte) else {
+            return Ok(());
+        };
+
+        let (channel, guarantees) = match packet_type {
+            PacketType::Test => {
+                let header = data.split_to(1);
+                let channel = header[0];
+                (channel, Guarantees::None)
+            }
+        };
 
         //------//
 
-        self.incoming_message
-            .send((message, client_index, channel))?;
+        self.incoming_message.send(Message {
+            data,
+            client,
+            channel,
+            guarantees,
+        })?;
 
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnection.
+    /// `Err(_)` <=> Channel disconnect.
     ///
     /// Client unknown => Drop message.
     fn handle_outgoing_message(
         &mut self,
-        message: BytesMut,
-        client_index: usize,
-        channel: u8,
+        Message {
+            data,
+            client,
+            channel,
+            guarantees,
+        }: Message,
     ) -> Result<()> {
         //------// Client handling //------//
 
         // Fetch client address or drop `message` if unknown.
 
-        let Some(client_addr) = self.clients.index_to_addr(client_index) else {
+        let Some(addr) = self.clients.id_to_addr(client) else {
             return Ok(());
         };
 
         //------// Conversion : Message -> Packet //------//
 
-        // Add header then copy message after.
-        // Header = channel.
+        // Append header based on guarantees.
         //
-        // Eventually reserve more capacity for buffer.
+        // Append payload and send.
 
-        self.outgoing_buffer.put_u8(channel);
-        self.outgoing_buffer.put(message);
-        let packet = self.outgoing_buffer.split();
+        match guarantees {
+            Guarantees::None => {
+                self.outgoing_buffer.put_u8(PacketType::Test.into());
+                self.outgoing_buffer.put_u8(channel.into());
+            }
+        };
 
-        if self.outgoing_buffer.capacity() < REALLOCATION_THRESHOLD {
-            self.outgoing_buffer.reserve(REALLOCATION_CAPACITY);
+        self.outgoing_buffer.put(data);
+        let data = self.outgoing_buffer.split().freeze();
+        self.outgoing_packet.send(Packet { data, addr })?;
+
+        //------// Resize buffer //------//
+
+        if self.outgoing_buffer.capacity() < MAX_PACKET_SIZE {
+            self.outgoing_buffer
+                .reserve(BUFFER_SIZE - self.outgoing_buffer.capacity());
         }
 
         //------//
-
-        self.outgoing_packet.send((packet, client_addr))?;
 
         Ok(())
     }

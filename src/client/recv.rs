@@ -3,92 +3,50 @@ use std::net::UdpSocket;
 use bytes::BytesMut;
 use crossbeam::channel::Sender;
 
+use super::{BUFFER_SIZE, MAX_PACKET_SIZE, Packet, RING_SIZE};
+
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-const REALLOCATION_CAPACITY: usize = 1_048_576; // = 2^20
-const MAX_PACKET_SIZE: usize = 1024;
-
-/// Receive UDP packets :
-/// 1. Receive/Buffer them.
-/// 2. Send them through `incoming_packet`.
-///
-/// ## Usage
-///
-/// Meant to be used in its own thread looping over `recv()`.
-///
-/// ```ignore
-/// loop {
-///     match receiver.recv() {
-///         Ok(_) => continue,
-///         Err(_) => break,
-///     }
-/// }
-/// ```
-////////////////////////////////////////////////////////////////////////////////////
-//
-// Buffering :
-//
-// Packets are buffered in front.
-// Their ownership can then be extracted (as `BytesMut`), reducing buffer size.
-// Once the packet owns its data (but still same place in memory), it can be sent.
-// When the packet is dropped, data is freed.
-//
-pub struct UdpPacketReceiver {
+pub struct PacketReceiver {
     socket: UdpSocket,
     buffer: BytesMut,
-    incoming_packet: Sender<BytesMut>,
+    incoming_packet: Sender<Packet>,
 }
 
-impl UdpPacketReceiver {
-    pub fn new(socket: UdpSocket, incoming_packet: Sender<BytesMut>) -> Self {
+impl PacketReceiver {
+    pub fn new(socket: UdpSocket, incoming_packet: Sender<Packet>) -> Self {
+        let mut buffer = BytesMut::with_capacity(RING_SIZE);
+        buffer.resize(MAX_PACKET_SIZE, 0);
         Self {
             socket,
-            buffer: BytesMut::zeroed(MAX_PACKET_SIZE),
+            buffer,
             incoming_packet,
         }
     }
 
-    /// Receive a packet (blocking).
-    ///
-    /// Blocks <=> or :
-    /// - Wait network for a packet to receive.
-    /// - Wait for `incoming_packet` to have space.
+    /// Block <=> or :
+    /// - Wait `socket`.
+    /// - Wait `incoming_packet` for space.
     ///
     /// `Err(_)` <=> or :
-    /// - Socket error.
-    /// - Channel disconnection.
+    /// - `incoming_packet` disconnect.
+    /// - `socket` fail while receiving.
     pub fn recv(&mut self) -> Result<()> {
-        //------// Receive/Buffer packet //------//
+        //------// Receive packet //------//
 
-        // Receive/Buffer a packet (fallible, blocking).
         // Bytes out of buffer size bounds are discarded.
+        let data_len = self.socket.recv(&mut self.buffer)?;
+        let data = self.buffer.split_to(data_len).freeze();
+        let packet = Packet { data };
+        self.incoming_packet.send(packet)?;
 
-        let packet_len = self.socket.recv(&mut self.buffer)?;
-
-        //------// Update buffer //------//
-
-        // Move packet ownership out of buffer.
-        // This reduce buffer size.
-        //
-        // Manually check and reallocate buffer capacity if necessary.
-        // Allow us to reallocate as big as we want.
-        //
-        // Resize buffer for next message.
-
-        let packet = self.buffer.split_to(packet_len);
+        //------// Resize buffer //------//
 
         if self.buffer.capacity() < MAX_PACKET_SIZE {
-            self.buffer.reserve(REALLOCATION_CAPACITY);
+            self.buffer.reserve(BUFFER_SIZE - self.buffer.capacity());
         }
-
         self.buffer.resize(MAX_PACKET_SIZE, 0);
-
-        //------// Send packet //------//
-
-        // Send packet through `incoming_packet` (fallible, blocking).
-
-        self.incoming_packet.send(packet)?;
 
         //------//
 

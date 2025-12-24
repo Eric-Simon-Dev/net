@@ -4,108 +4,130 @@ use crossbeam::{
     select,
 };
 
+use super::{BUFFER_SIZE, Guarantees, MAX_PACKET_SIZE, Message, Packet, PacketType, RING_SIZE};
+
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-const REALLOCATION_CAPACITY: usize = 1_048_576; // = 2^20
-const REALLOCATION_THRESHOLD: usize = 1024;
-
-/// Interface between UDP packets and messages (incoming & outgoing).
-///
-/// Apply transport protocols.
-///
-/// ## Usage
-///
-/// Meant to be used in its own thread looping over `handle()`.
-///
-/// ```ignore
-/// loop {
-///     match handler.handle() {
-///         Ok(_) => continue,
-///         Err(_) => break,
-///     }
-/// }
-/// ```
 pub struct Handler {
     outgoing_buffer: BytesMut,
 
     //------// Channels //------//
-    incoming_packet: Receiver<BytesMut>,
-    outgoing_message: Receiver<(BytesMut, u8)>,
-    outgoing_packet: Sender<BytesMut>,
-    incoming_message: Sender<(BytesMut, u8)>,
+    incoming_packet: Receiver<Packet>,
+    outgoing_message: Receiver<Message>,
+    outgoing_packet: Sender<Packet>,
+    incoming_message: Sender<Message>,
 }
+
+//------// Constructor //------//
 
 impl Handler {
     pub fn new(
-        incoming_packet: Receiver<BytesMut>,
-        outgoing_message: Receiver<(BytesMut, u8)>,
-        outgoing_packet: Sender<BytesMut>,
-        incoming_message: Sender<(BytesMut, u8)>,
+        incoming_packet: Receiver<Packet>,
+        outgoing_message: Receiver<Message>,
+        outgoing_packet: Sender<Packet>,
+        incoming_message: Sender<Message>,
     ) -> Self {
         Self {
-            outgoing_buffer: BytesMut::with_capacity(REALLOCATION_CAPACITY),
+            outgoing_buffer: BytesMut::with_capacity(RING_SIZE),
             incoming_packet,
-            outgoing_message,
-            incoming_message,
             outgoing_packet,
+            incoming_message,
+            outgoing_message,
         }
     }
+}
 
-    /// Handle network protocols (blocking).
+//------// Handling //------//
+
+impl Handler {
+    /// Block <=> Wait channels.
     ///
-    /// Blocks <=> Wait channels for a packet to handle.
-    ///
-    /// `Err(_)` <=> Channel disconnection.
+    /// `Err(_)` <=> Channel disconnect.
     pub fn handle(&mut self) -> Result<()> {
         select! {
             recv(self.incoming_packet) -> packet => {
                 self.handle_incoming_packet(packet?)?;
             }
             recv(self.outgoing_message) -> message => {
-                let (message, channel) = message?;
-                self.handle_outgoing_message(message, channel)?;
+                self.handle_outgoing_message(message?)?;
             }
         }
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnection.
-    fn handle_incoming_packet(&mut self, mut packet: BytesMut) -> Result<()> {
+    /// `Err(_)` <=> Channel disconnect.
+    ///
+    /// Client unknown => Try adding client, else drop packet.
+    /// Packet type unknown => Drop packet.
+    fn handle_incoming_packet(&mut self, Packet { mut data }: Packet) -> Result<()> {
         //------// Conversion : Packet -> Message //------//
 
-        // Extract header then truncate it to get message.
+        // Extract packet type (to know header format).
+        // Drop packet if unknown.
+        //
+        // Extract header, react to it and return (channel, guarantees).
 
-        let channel = packet[0];
-        let message = packet.split_off(1);
+        let packet_type_byte = data.split_to(1)[0];
+        let Ok(packet_type) = PacketType::try_from(packet_type_byte) else {
+            return Ok(());
+        };
+
+        let (channel, guarantees) = match packet_type {
+            PacketType::Test => {
+                let header = data.split_to(1);
+                let channel = header[0];
+                (channel, Guarantees::None)
+            }
+        };
 
         //------//
 
-        self.incoming_message.send((message, channel))?;
+        self.incoming_message.send(Message {
+            data,
+            channel,
+            guarantees,
+        })?;
 
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnection.
-    fn handle_outgoing_message(&mut self, message: BytesMut, channel: u8) -> Result<()> {
+    /// `Err(_)` <=> Channel disconnect.
+    ///
+    /// Client unknown => Drop message.
+    fn handle_outgoing_message(
+        &mut self,
+        Message {
+            data,
+            channel,
+            guarantees,
+        }: Message,
+    ) -> Result<()> {
         //------// Conversion : Message -> Packet //------//
 
-        // Add header then copy message after.
-        // Header = channel.
+        // Append header based on guarantees.
         //
-        // Eventually reserve more capacity for buffer.
+        // Append payload and send.
 
-        self.outgoing_buffer.put_u8(channel);
-        self.outgoing_buffer.put(message);
-        let packet = self.outgoing_buffer.split();
+        match guarantees {
+            Guarantees::None => {
+                self.outgoing_buffer.put_u8(PacketType::Test.into());
+                self.outgoing_buffer.put_u8(channel.into());
+            }
+        };
 
-        if self.outgoing_buffer.capacity() < REALLOCATION_THRESHOLD {
-            self.outgoing_buffer.reserve(REALLOCATION_CAPACITY);
+        self.outgoing_buffer.put(data);
+        let data = self.outgoing_buffer.split().freeze();
+        self.outgoing_packet.send(Packet { data })?;
+
+        //------// Resize buffer //------//
+
+        if self.outgoing_buffer.capacity() < MAX_PACKET_SIZE {
+            self.outgoing_buffer
+                .reserve(BUFFER_SIZE - self.outgoing_buffer.capacity());
         }
 
         //------//
-
-        self.outgoing_packet.send(packet)?;
 
         Ok(())
     }

@@ -1,83 +1,94 @@
-//! Client-side RUDP network library.
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! let client = client::connect("0:1234", "256.0.0.4:4567")?;
-//! ```
-
 mod handle;
 mod recv;
 mod send;
 
 use std::{
+    io,
     net::{ToSocketAddrs, UdpSocket},
     thread,
 };
 
-use bytes::BytesMut;
+use bytes::Bytes;
 use crossbeam::channel::{Receiver, Sender, bounded};
 
+use super::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
 use handle::Handler;
-use recv::UdpPacketReceiver;
-use send::UdpPacketSender;
+use recv::PacketReceiver;
+use send::PacketSender;
 
-type Error = Box<dyn std::error::Error>;
-type Result<T> = std::result::Result<T, Error>;
+const MAX_PACKET_IN_FLIGHT: usize = 1024;
+const BUFFER_SIZE: usize = MAX_PACKET_SIZE * MAX_PACKET_IN_FLIGHT;
+const RING_SIZE: usize = BUFFER_SIZE * 16;
 
-const CHANNELS_CAPACITY: usize = 256;
+////////////////////////////////////////////////////////////////////////////////
+// Client
+////////////////////////////////////////////////////////////////////////////////
 
-/// Messages are sent and received using
-/// "crossbeam" channels and "bytes" pointers.
-///
-/// Channels :
-/// - `incoming()`
-/// - `outgoing()`
 pub struct Client {
-    incoming_message: Receiver<(BytesMut, u8)>,
-    outgoing_message: Sender<(BytesMut, u8)>,
+    socket: UdpSocket,
 }
 
+//------// Constructor //------//
+
 impl Client {
-    /// Format = (data, channel).
-    pub fn incoming(&mut self) -> &mut Receiver<(BytesMut, u8)> {
-        &mut self.incoming_message
+    /// Create a server bound to `addr`.
+    pub fn new(addr: impl ToSocketAddrs) -> io::Result<Client> {
+        Ok(Self {
+            socket: UdpSocket::bind(addr)?,
+        })
     }
+}
 
-    /// Format = (data, channel).
-    pub fn outgoing(&mut self) -> &mut Sender<(BytesMut, u8)> {
-        &mut self.outgoing_message
-    }
+//------// Methods //------//
 
-    /// Try binding `addr` to a UDP socket.
-    /// Try connecting it to `server_addr`.
-    /// Spawn threads to carry networking.
+impl Client {
+    /// Connect to `server_addr` and start pumping messages.
     ///
-    /// Err(_) <=> Fail to bind/connect/clone UDP socket.
-    pub fn new(addr: impl ToSocketAddrs, server_addr: impl ToSocketAddrs) -> Result<Client> {
+    /// In case of an endpoint returning `Err(Disconnected)`,
+    /// it means network stopped working.
+    ///
+    /// It is then safe to call again this method.
+    pub fn connect(
+        &mut self,
+        server_addr: impl ToSocketAddrs,
+    ) -> io::Result<(Sender<Message>, Receiver<Message>)> {
         //------// Socket //------//
 
-        // Bind UDP socket (fallible).
-        //
-        // Connect to `server_addr` (fallible).
-        //
-        // Clone socket (fallible).
-
-        let socket = UdpSocket::bind(addr)?;
-        socket.connect(server_addr)?;
-        let recv_socket = socket.try_clone()?;
-        let send_socket = socket.try_clone()?;
+        self.socket.connect(server_addr)?;
 
         //------// Channels //------//
 
-        let incoming_packet = bounded(CHANNELS_CAPACITY);
-        let outgoing_packet = bounded(CHANNELS_CAPACITY);
-        let incoming_message = bounded(CHANNELS_CAPACITY);
-        let outgoing_message = bounded(CHANNELS_CAPACITY);
+        // Create channels for inter-threads communication.
+        // See module documentation for naming conventions.
+
+        let cap = MAX_PACKET_IN_FLIGHT;
+        let incoming_packet = bounded(cap);
+        let outgoing_packet = bounded(cap);
+        let incoming_message = bounded(cap);
+        let outgoing_message = bounded(cap);
 
         //------// Threads //------//
 
-        let mut receiver = UdpPacketReceiver::new(recv_socket, incoming_packet.0);
+        // Spawn threads to pump packets and messages.
+        // See module documentation for explanations.
+
+        self.spawn_receiver(incoming_packet.0)?;
+        self.spawn_sender(outgoing_packet.1)?;
+        self.spawn_handler(
+            incoming_packet.1,
+            outgoing_message.1,
+            outgoing_packet.0,
+            incoming_message.0,
+        );
+
+        //------//
+
+        Ok((outgoing_message.0, incoming_message.1))
+    }
+
+    /// `Err(_)` <=> Fail to clone `self.socket`.
+    fn spawn_receiver(&mut self, incoming_packet: Sender<Packet>) -> io::Result<()> {
+        let mut receiver = PacketReceiver::new(self.socket.try_clone()?, incoming_packet);
         thread::spawn(move || {
             loop {
                 match receiver.recv() {
@@ -86,8 +97,12 @@ impl Client {
                 }
             }
         });
+        Ok(())
+    }
 
-        let mut sender = UdpPacketSender::new(send_socket, outgoing_packet.1);
+    /// `Err(_)` <=> Fail to clone `self.socket`.
+    fn spawn_sender(&mut self, outgoing_packet: Receiver<Packet>) -> io::Result<()> {
+        let mut sender = PacketSender::new(self.socket.try_clone()?, outgoing_packet);
         thread::spawn(move || {
             loop {
                 match sender.send() {
@@ -96,12 +111,21 @@ impl Client {
                 }
             }
         });
+        Ok(())
+    }
 
+    fn spawn_handler(
+        &mut self,
+        incoming_packet: Receiver<Packet>,
+        outgoing_message: Receiver<Message>,
+        outgoing_packet: Sender<Packet>,
+        incoming_message: Sender<Message>,
+    ) {
         let mut handler = Handler::new(
-            incoming_packet.1,
-            outgoing_message.1,
-            outgoing_packet.0,
-            incoming_message.0,
+            incoming_packet,
+            outgoing_message,
+            outgoing_packet,
+            incoming_message,
         );
         thread::spawn(move || {
             loop {
@@ -111,12 +135,34 @@ impl Client {
                 }
             }
         });
-
-        //------//
-
-        Ok(Client {
-            incoming_message: incoming_message.1,
-            outgoing_message: outgoing_message.0,
-        })
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Small structures
+////////////////////////////////////////////////////////////////////////////////
+
+//------// Message (public) //------//
+
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub data: Bytes,
+    pub channel: u8,
+    pub guarantees: Guarantees,
+}
+
+impl Message {
+    pub const MAX_DATA_SIZE: usize = MAX_PAYLOAD_SIZE;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Guarantees {
+    None,
+}
+
+//------// Packet (private) //------//
+
+#[derive(Debug)]
+struct Packet {
+    data: Bytes,
 }

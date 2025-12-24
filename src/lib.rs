@@ -1,24 +1,4 @@
-//! RUDP network library.
-//!
-//! Uses 3 threads for networking :
-//! - Receiver : Receive and buffer incoming UDP packets.
-//! - Sender : Send outgoing UDP packets.
-//! - Handler : Interface between App and Receiver/Sender. Handle RUDP protocol logic.
-//!
-//! ## Usage
-//!
-//! Provide `client` and `server` modules,
-//! depending on the network entity needed.
-//!
-//! Channels are used to send and receive messages using :
-//! - `crossbeam::channel::{Sender, Receiver}` : Flexible, Efficient, Multi-thread channels.
-//! - `bytes::{Bytes, BytesMut}` data pointers : Ergonomic, Multi-thread.
-//!
-//! These structures are ergonomic and used in `tokio` (very serious crate).
-//!
-//! ## Memos
-//!
-//! ### TCP/UDP/RUDP
+//! # TCP/UDP/RUDP
 //!
 //! Both are standard protocol buid on top of IP.
 //!
@@ -42,7 +22,7 @@
 //! Most of the times, an RUDP protocol implements some degree of reliability (hence the "Reliable")
 //! but it can designates any protocol on top of UDP *in my opinion*.
 //!
-//! ### IPv4/IPv6
+//! # IPv4/IPv6
 //!
 //! Ideally we want to handle both IPv4 and IPv6
 //! to get maximum player base.
@@ -53,33 +33,54 @@
 //!
 //! For now it's single socket and server/client IP versions must match (both v4 or both v6).
 
-// ## Terminology
+// # Channels
 //
-// Packet = Network-aware data, meant for transport.
-// Message = Network-agnostic data, meant for the app.
+// Channel naming conventions :
+// - Message := Payload + application metadata.
+// - Packet := Payload + protocol metadata (unseen by user).
+// - Incoming := From network to app.
+// - Outgoing := From app to network.
 //
-// ## Channel propagation
+// # Threads
 //
-// Channels are used as dominos to propagate errors and shutdowns. Examples :
+// They loop continuously on blocking functions.
+// Blocking allow context switching.
 //
-// Drop Self
-// => Channel disconnection on Handler
-// => Drop Handler
-// => Channel disconnection on Recv & Send
-// => Drop Recv & Drop Send
+// In case of error :
+// => A thread fail and shutdown.
+// => Chain reaction of channel disconnections and thus threads shutdowns.
+// => Finally the user receive `Err(Disconnected)`.
 //
-// Error on Recv
-// => Drop Recv
-// => Channel disconnection on Handler
-// => Drop Handler
-// => Channel disconnection on Send & Self
-// => Drop Send & Return error `Disconnected` when using Self
+// # Buffering strategy
+//
+// 1. Reserve RING capacity (multiple contiguous buffers), say 4Mb (each buffer 1Mb).
+// 2. "Eat" (give ownership away) buffer from the front when buffering packets.
+// 3. Once we reach the end of the ring :
+//      - Reallocate BUFFER capacity
+//          => Optimization (from "bytes" crate) should reallocate to beginning of the ring.
+//          => Avoid reallocation from the OS.
+//
+// We reallocate only BUFFER (1Mb) because middle/end of the ring will be in use
+// by other threads which haven't dropped the packet.
+// => If app hold on too long on packets (next buffer in use), this won't work.
+//
+// This optimized behaviour wasn't tested.
+// To test it, we need to monitor if buffer pointers always fall within ring range.
 
-mod client;
-mod server;
-
-pub use client::Client;
-pub use server::{CLIENT_CAPACITY, Server};
+pub mod client;
+pub mod server;
 
 #[cfg(test)]
 mod tests;
+
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+
+const MAX_PACKET_SIZE: usize = 1024;
+const MAX_HEADER_SIZE: usize = 32;
+const MAX_PAYLOAD_SIZE: usize = MAX_PACKET_SIZE - MAX_HEADER_SIZE;
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+enum PacketType {
+    Test,
+}
