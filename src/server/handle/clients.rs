@@ -33,7 +33,7 @@ impl Clients {
         //------// Check //------//
 
         if self.addr_to_id.contains_key(&addr) {
-            return Err("client already registered".into());
+            return Err("already registered".into());
         }
 
         //------// Add //------//
@@ -57,7 +57,7 @@ impl Clients {
         //------// Check //------//
 
         if self.id_to_addr.contains_key(&id) {
-            return Err("unknown client".into());
+            return Err("unknown".into());
         }
 
         //------// Remove //------//

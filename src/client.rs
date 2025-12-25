@@ -90,11 +90,8 @@ impl Client {
     fn spawn_receiver(&mut self, incoming_packet: Sender<Packet>) -> io::Result<()> {
         let mut receiver = PacketReceiver::new(self.socket.try_clone()?, incoming_packet);
         thread::spawn(move || {
-            loop {
-                match receiver.recv() {
-                    Ok(_) => continue,
-                    Err(_) => break,
-                }
+            while receiver.recv().is_ok() {
+                continue;
             }
         });
         Ok(())
@@ -104,11 +101,8 @@ impl Client {
     fn spawn_sender(&mut self, outgoing_packet: Receiver<Packet>) -> io::Result<()> {
         let mut sender = PacketSender::new(self.socket.try_clone()?, outgoing_packet);
         thread::spawn(move || {
-            loop {
-                match sender.send() {
-                    Ok(_) => continue,
-                    Err(_) => break,
-                }
+            while sender.send().is_ok() {
+                continue;
             }
         });
         Ok(())
@@ -128,11 +122,8 @@ impl Client {
             incoming_message,
         );
         thread::spawn(move || {
-            loop {
-                match handler.handle() {
-                    Ok(_) => continue,
-                    Err(_) => break,
-                }
+            while handler.handle().is_ok() {
+                continue;
             }
         });
     }

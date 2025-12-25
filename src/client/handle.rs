@@ -112,7 +112,7 @@ impl Handler {
         match guarantees {
             Guarantees::None => {
                 self.outgoing_buffer.put_u8(PacketType::Test.into());
-                self.outgoing_buffer.put_u8(channel.into());
+                self.outgoing_buffer.put_u8(channel);
             }
         };
 

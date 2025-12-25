@@ -65,10 +65,10 @@ impl Handler {
 
     /// `Err(_)` <=> Channel disconnect.
     ///
-    /// Client unknown => Try adding client, else drop packet.
+    /// Peer unknown => Try adding peer, else drop packet.
     /// Packet type unknown => Drop packet.
     fn handle_incoming_packet(&mut self, Packet { mut data, addr }: Packet) -> Result<()> {
-        //------// Client handling //------//
+        //------// Peer handling //------//
 
         let client = match self.clients.addr_to_id(addr) {
             Some(id) => id,
@@ -139,7 +139,7 @@ impl Handler {
         match guarantees {
             Guarantees::None => {
                 self.outgoing_buffer.put_u8(PacketType::Test.into());
-                self.outgoing_buffer.put_u8(channel.into());
+                self.outgoing_buffer.put_u8(channel);
             }
         };
 
