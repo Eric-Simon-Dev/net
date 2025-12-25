@@ -33,6 +33,14 @@
 //!
 //! For now it's single socket and server/client IP versions must match (both v4 or both v6).
 
+// # Session & Transport
+//
+// Different layers in network with different responsibilities :
+// - Transport : Guarantees (ex: RUDP, ENet, etc.)
+// - Session : Continuity (authentification, reconnection, etc.)
+//
+// Still unsure about the definitions.
+//
 // # Channels
 //
 // Channel naming conventions :
