@@ -9,17 +9,22 @@ use super::{BUFFER_SIZE, Guarantees, MAX_PACKET_SIZE, Message, Packet, PacketTyp
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
+/// Central handler responsible for:
+/// - converting packets to messages and vice versa,
+/// - routing data between network and application channels.
 pub struct Handler {
+    /// Buffer for building outgoing packets.
+    /// Mainly to adjust header size.
     outgoing_buffer: BytesMut,
 
-    //------// Channels //------//
+    // ---- Channels ----
     incoming_packet: Receiver<Packet>,
     outgoing_message: Receiver<Message>,
     outgoing_packet: Sender<Packet>,
     incoming_message: Sender<Message>,
 }
 
-//------// Constructor //------//
+// ---- Constructor ----
 
 impl Handler {
     pub fn new(
@@ -38,12 +43,15 @@ impl Handler {
     }
 }
 
-//------// Handling //------//
+// ---- Handling ----
 
 impl Handler {
-    /// Block <=> Wait channels.
+    /// Process a single event, blocking until either:
+    /// - a packet is received from the network, or
+    /// - a message is ready to be sent.
     ///
-    /// `Err(_)` <=> Channel disconnect.
+    /// # Errors
+    /// Any channel disconnects.
     pub fn handle(&mut self) -> Result<()> {
         select! {
             recv(self.incoming_packet) -> packet => {
@@ -56,23 +64,24 @@ impl Handler {
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnect.
+    /// Convert an incoming `Packet` into a high-level `Message`.
     ///
-    /// Client unknown => Try adding client, else drop packet.
-    /// Packet type unknown => Drop packet.
+    /// # Behavior
+    /// If packet type is unknown -> Drop the packet.
+    ///
+    /// # Errors
+    /// One of the incoming channels disconnects.
     fn handle_incoming_packet(&mut self, Packet { mut data }: Packet) -> Result<()> {
-        //------// Conversion : Packet -> Message //------//
+        // ---- Extract ----
 
-        // Extract packet type (to know header format).
+        // Extract packet type (gives header format).
         // Drop packet if unknown.
-        //
-        // Extract header, react to it and return (channel, guarantees).
-
         let packet_type_byte = data.split_to(1)[0];
         let Ok(packet_type) = PacketType::try_from(packet_type_byte) else {
             return Ok(());
         };
 
+        // Extract header
         let (channel, guarantees) = match packet_type {
             PacketType::Test => {
                 let header = data.split_to(1);
@@ -81,7 +90,7 @@ impl Handler {
             }
         };
 
-        //------//
+        // ---- Forward ----
 
         self.incoming_message.send(Message {
             data,
@@ -89,12 +98,12 @@ impl Handler {
             guarantees,
         })?;
 
+        // ----
+
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnect.
-    ///
-    /// Client unknown => Drop message.
+    /// Convert a high-level `Message` into a raw `Packet` and send it.
     fn handle_outgoing_message(
         &mut self,
         Message {
@@ -103,12 +112,9 @@ impl Handler {
             guarantees,
         }: Message,
     ) -> Result<()> {
-        //------// Conversion : Message -> Packet //------//
+        // ---- Build ----
 
-        // Append header based on guarantees.
-        //
-        // Append payload and send.
-
+        // Build packet header based on guarantees
         match guarantees {
             Guarantees::None => {
                 self.outgoing_buffer.put_u8(PacketType::Test.into());
@@ -116,18 +122,22 @@ impl Handler {
             }
         };
 
+        // Append payload
         self.outgoing_buffer.put(data);
+
+        // ---- Forward ----
+
         let data = self.outgoing_buffer.split();
         self.outgoing_packet.send(Packet { data })?;
 
-        //------// Resize buffer //------//
+        // ---- Buffer maintenance ----
 
         if self.outgoing_buffer.capacity() < MAX_PACKET_SIZE {
             self.outgoing_buffer
                 .reserve(BUFFER_SIZE - self.outgoing_buffer.capacity());
         }
 
-        //------//
+        // ----
 
         Ok(())
     }

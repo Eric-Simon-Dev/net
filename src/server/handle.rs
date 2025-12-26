@@ -14,18 +14,26 @@ use clients::Clients;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
+/// Central handler responsible for:
+/// - managing connected clients,
+/// - converting packets to messages and vice versa,
+/// - routing data between network and application channels.
 pub struct Handler {
+    /// Client registry mapping socket addresses to client IDs.
     clients: Clients,
+
+    /// Buffer for building outgoing packets.
+    /// Mainly to adjust header size.
     outgoing_buffer: BytesMut,
 
-    //------// Channels //------//
+    // ---- Channels ----
     incoming_packet: Receiver<Packet>,
     outgoing_message: Receiver<Message>,
     outgoing_packet: Sender<Packet>,
     incoming_message: Sender<Message>,
 }
 
-//------// Constructor //------//
+// ---- Constructor ----
 
 impl Handler {
     pub fn new(
@@ -45,12 +53,15 @@ impl Handler {
     }
 }
 
-//------// Handling //------//
+// ---- Handling ----
 
 impl Handler {
-    /// Block <=> Wait channels.
+    /// Process a single event, blocking until either:
+    /// - a packet is received from the network, or
+    /// - a message is ready to be sent.
     ///
-    /// `Err(_)` <=> Channel disconnect.
+    /// # Errors
+    /// Any channel disconnects.
     pub fn handle(&mut self) -> Result<()> {
         select! {
             recv(self.incoming_packet) -> packet => {
@@ -63,12 +74,16 @@ impl Handler {
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnect.
+    /// Convert an incoming `Packet` into a high-level `Message`.
     ///
-    /// Peer unknown => Try adding peer, else drop packet.
-    /// Packet type unknown => Drop packet.
+    /// # Behavior
+    /// - If client is unknown -> Try adding it or else drop the packet.
+    /// - If packet type is unknown -> Drop the packet.
+    ///
+    /// # Errors
+    /// One of the incoming channels disconnects.
     fn handle_incoming_packet(&mut self, Packet { mut data, addr }: Packet) -> Result<()> {
-        //------// Peer handling //------//
+        // ---- Client handling ----
 
         let client = match self.clients.addr_to_id(addr) {
             Some(id) => id,
@@ -78,18 +93,16 @@ impl Handler {
             },
         };
 
-        //------// Conversion : Packet -> Message //------//
+        // ---- Extract ----
 
-        // Extract packet type (to know header format).
+        // Extract packet type (gives header format).
         // Drop packet if unknown.
-        //
-        // Extract header, react to it and return (channel, guarantees).
-
         let packet_type_byte = data.split_to(1)[0];
         let Ok(packet_type) = PacketType::try_from(packet_type_byte) else {
             return Ok(());
         };
 
+        // Extract header
         let (channel, guarantees) = match packet_type {
             PacketType::Test => {
                 let header = data.split_to(1);
@@ -98,7 +111,7 @@ impl Handler {
             }
         };
 
-        //------//
+        // ---- Forward ----
 
         self.incoming_message.send(Message {
             data,
@@ -107,12 +120,15 @@ impl Handler {
             guarantees,
         })?;
 
+        // ----
+
         Ok(())
     }
 
-    /// `Err(_)` <=> Channel disconnect.
+    /// Convert a high-level `Message` into a raw `Packet` and send it.
     ///
-    /// Client unknown => Drop message.
+    /// # Behavior
+    /// - Messages to unknown clients are dropped.
     fn handle_outgoing_message(
         &mut self,
         Message {
@@ -122,20 +138,15 @@ impl Handler {
             guarantees,
         }: Message,
     ) -> Result<()> {
-        //------// Client handling //------//
-
-        // Fetch client address or drop `message` if unknown.
+        // ---- Client handling ----
 
         let Some(addr) = self.clients.id_to_addr(client) else {
             return Ok(());
         };
 
-        //------// Conversion : Message -> Packet //------//
+        // ---- Build ----
 
-        // Append header based on guarantees.
-        //
-        // Append payload and send.
-
+        // Build packet header based on guarantees
         match guarantees {
             Guarantees::None => {
                 self.outgoing_buffer.put_u8(PacketType::Test.into());
@@ -143,18 +154,22 @@ impl Handler {
             }
         };
 
+        // Append payload
         self.outgoing_buffer.put(data);
+
+        // ---- Forward ----
+
         let data = self.outgoing_buffer.split();
         self.outgoing_packet.send(Packet { data, addr })?;
 
-        //------// Resize buffer //------//
+        // ---- Buffer maintenance ----
 
         if self.outgoing_buffer.capacity() < MAX_PACKET_SIZE {
             self.outgoing_buffer
                 .reserve(BUFFER_SIZE - self.outgoing_buffer.capacity());
         }
 
-        //------//
+        // ----
 
         Ok(())
     }

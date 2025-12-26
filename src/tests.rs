@@ -4,6 +4,7 @@ use bytes::BytesMut;
 
 use crate::{client, server};
 
+/// Ensure that a server and a client can successfully bind, listen, and connect.
 #[test]
 fn connection() {
     let mut server = server::Server::new("0:12012").unwrap();
@@ -12,46 +13,50 @@ fn connection() {
     let (_, _) = client.connect("0:12012").unwrap();
 }
 
+/// Perform multiple message exchanges between a client and a server.
+///
+/// The client and server run on separate threads and bounce a single-byte
+/// message back and forth, incrementing it each time.
 #[test]
 fn multiple_exchanges() {
+    // Spawn server first.
     thread::spawn(|| {
-        server_side();
+        run_server();
     });
 
-    // Wait for server to listen
-    // so that client connection doesn't fail.
+    // Give the server time to start listening so the client connection succeeds.
     thread::sleep(Duration::from_millis(100));
 
     thread::spawn(|| {
-        client_side();
+        run_client();
     });
 }
 
-fn server_side() {
+fn run_server() {
     use crate::server::Server;
 
     let mut server = Server::new("0:12014").unwrap();
     let (sender, receiver) = server.listen().unwrap();
 
-    // Receive and return msg + 1 16 times
+    // Receive a message and send back `msg + 1` sixteen times.
     for _ in 0..16 {
         let mut msg = receiver.recv().unwrap();
         msg.data[0] += 1;
         sender.send(msg).unwrap();
     }
 
-    // Last recv
+    // Final receive: ensure the expected value is reached.
     let msg = receiver.recv().unwrap();
     assert_eq!(msg.data[0], 32);
 }
 
-fn client_side() {
+fn run_client() {
     use crate::client::{Client, Guarantees, Message};
 
     let mut client = Client::new("0:12015").unwrap();
     let (sender, receiver) = client.connect("0:12014").unwrap();
 
-    // First send
+    // Initial message with value 0.
     let msg = Message {
         data: BytesMut::zeroed(1),
         channel: 0,
@@ -59,7 +64,7 @@ fn client_side() {
     };
     sender.send(msg).unwrap();
 
-    // Receive and return msg + 1 16 times
+    // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
         let mut msg = receiver.recv().unwrap();
         msg.data[0] += 1;
