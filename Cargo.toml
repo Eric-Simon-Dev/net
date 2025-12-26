@@ -1,6 +1,6 @@
 [package]
-name = "transport"
-version = "0.8.0"
+name = "net"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]

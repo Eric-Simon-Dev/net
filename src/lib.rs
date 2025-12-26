@@ -40,6 +40,7 @@
 // - Session : Continuity (authentification, reconnection, etc.)
 //
 // Still unsure about the definitions.
+// Might separate the crate later into "transport" and "session" modules.
 //
 // # Channels
 //

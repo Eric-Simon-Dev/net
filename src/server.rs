@@ -145,6 +145,7 @@ impl Message {
 pub struct ClientId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Guarantees {
     None,
 }

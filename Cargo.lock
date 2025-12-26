@@ -93,6 +93,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
+name = "net"
+version = "1.0.0"
+dependencies = [
+ "bytes",
+ "crossbeam",
+ "num_enum",
+ "rustc-hash",
+]
+
+[[package]]
 name = "num_enum"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -212,16 +222,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3198b4b0a8e11f09dd03e133c0280504d0801269e9afa46362ffde1cbeebf44"
 dependencies = [
  "winnow",
-]
-
-[[package]]
-name = "transport"
-version = "0.8.0"
-dependencies = [
- "bytes",
- "crossbeam",
- "num_enum",
- "rustc-hash",
 ]
 
 [[package]]
