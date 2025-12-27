@@ -21,7 +21,7 @@ impl UdpSender {
         }
     }
 
-    /// Send a single UDP packet fetch from `outgoing_packet`.
+    /// Send a single UDP packet fetched from `outgoing_packet`.
     ///
     /// # Behavior
     /// - Blocks on `outgoing_packet` until a packet arrives.

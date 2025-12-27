@@ -36,7 +36,7 @@ impl Server {
     /// Creates a new server bound to the given `addr`.
     ///
     /// # Errors
-    /// - `UdpSocket` cannot be bound to the address.
+    /// `UdpSocket` cannot be bound to the address.
     pub fn new(addr: impl ToSocketAddrs) -> io::Result<Server> {
         Ok(Self {
             socket: UdpSocket::bind(addr)?,
@@ -58,7 +58,7 @@ impl Server {
     /// but previous client IDs are no longer valid.
     ///
     /// # Errors
-    /// - Fail to clone server's UDP socket.
+    /// Fail to clone server's UDP socket.
     pub fn listen(&mut self) -> io::Result<(Sender<Message>, Receiver<Message>)> {
         // ---- Channels ----
 
@@ -89,7 +89,7 @@ impl Server {
     }
 
     /// # Errors
-    /// - Fail to clone server's UDP socket.
+    /// Fail to clone server's UDP socket.
     fn spawn_receiver_thread(&mut self, incoming_packet: Sender<Packet>) -> io::Result<()> {
         let mut receiver = UdpReceiver::new(self.socket.try_clone()?, incoming_packet);
         thread::spawn(move || {
@@ -101,7 +101,7 @@ impl Server {
     }
 
     /// # Errors
-    /// - Fail to clone server's UDP socket.
+    /// Fail to clone server's UDP socket.
     fn spawn_sender_thread(&mut self, outgoing_packet: Receiver<Packet>) -> io::Result<()> {
         let mut sender = UdpSender::new(self.socket.try_clone()?, outgoing_packet);
         thread::spawn(move || {
@@ -139,18 +139,17 @@ impl Server {
 
 // ---- Message (public) ----
 
-/// High-level message for application use.
 #[derive(Debug, Clone)]
 pub struct Message {
     pub data: BytesMut,
-    pub client: ClientId,
+    pub client_id: ClientId,
     pub channel: u8,
     pub guarantees: Guarantees,
 }
 
 /// Unique identifier for a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ClientId(usize);
+pub struct ClientId(u64);
 
 /// Reliability guarantees for a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,9 +165,8 @@ impl Message {
 
 // ---- Packet (private) ----
 
-/// Raw network packet for internal use.
 #[derive(Debug)]
 struct Packet {
     data: BytesMut,
-    addr: SocketAddr,
+    client_addr: SocketAddr,
 }

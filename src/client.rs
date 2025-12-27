@@ -36,7 +36,7 @@ impl Client {
     /// Creates a new client bound to the given `addr`.
     ///
     /// # Errors
-    /// Returns an error if the `UdpSocket` cannot be bound to the address.
+    /// `UdpSocket` cannot be bound to the address.
     pub fn new(addr: impl ToSocketAddrs) -> io::Result<Client> {
         Ok(Self {
             socket: UdpSocket::bind(addr)?,
@@ -57,6 +57,7 @@ impl Client {
     /// It is safe to call this method again to relaunch the network.
     ///
     /// # Errors
+    /// - Fail to connect to server address.
     /// - Fail to clone client's UDP socket.
     pub fn connect(
         &mut self,
@@ -97,7 +98,7 @@ impl Client {
     }
 
     /// # Errors
-    /// - Fail to clone client's UDP socket.
+    /// Fail to clone client's UDP socket.
     fn spawn_receiver_thread(&mut self, incoming_packet: Sender<Packet>) -> io::Result<()> {
         let mut receiver = UdpReceiver::new(self.socket.try_clone()?, incoming_packet);
         thread::spawn(move || {
@@ -109,7 +110,7 @@ impl Client {
     }
 
     /// # Errors
-    /// - Fail to clone client's UDP socket.
+    /// Fail to clone client's UDP socket.
     fn spawn_sender_thread(&mut self, outgoing_packet: Receiver<Packet>) -> io::Result<()> {
         let mut sender = UdpSender::new(self.socket.try_clone()?, outgoing_packet);
         thread::spawn(move || {
@@ -147,7 +148,6 @@ impl Client {
 
 // ---- Message (public) ----
 
-/// High-level message for application use.
 #[derive(Debug, Clone)]
 pub struct Message {
     pub data: BytesMut,
@@ -169,7 +169,6 @@ impl Message {
 
 // ---- Packet (private) ----
 
-/// Raw network packet for internal use.
 #[derive(Debug)]
 struct Packet {
     data: BytesMut,

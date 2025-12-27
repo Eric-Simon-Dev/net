@@ -1,5 +1,7 @@
 pub mod clients;
 
+use std::net::SocketAddr;
+
 use bytes::{BufMut, BytesMut};
 use crossbeam::{
     channel::{Receiver, Sender},
@@ -61,7 +63,7 @@ impl Handler {
     /// - a message is ready to be sent.
     ///
     /// # Errors
-    /// Any channel disconnects.
+    /// Any channel disconnect.
     pub fn handle(&mut self) -> Result<()> {
         select! {
             recv(self.incoming_packet) -> packet => {
@@ -77,50 +79,40 @@ impl Handler {
     /// Convert an incoming `Packet` into a high-level `Message`.
     ///
     /// # Behavior
-    /// - If client is unknown -> Try adding it or else drop the packet.
+    /// - If client is unknown -> Register it.
     /// - If packet type is unknown -> Drop the packet.
     ///
     /// # Errors
-    /// One of the incoming channels disconnects.
-    fn handle_incoming_packet(&mut self, Packet { mut data, addr }: Packet) -> Result<()> {
-        // ---- Client handling ----
+    /// `incoming_message` disconnects.
+    fn handle_incoming_packet(&mut self, mut pkt: Packet) -> Result<()> {
+        // Client handling.
+        let client_id = self
+            .clients
+            .addr_to_id(pkt.client_addr)
+            .unwrap_or_else(|| self.clients.add(pkt.client_addr));
 
-        let client = match self.clients.addr_to_id(addr) {
-            Some(id) => id,
-            None => match self.clients.add(addr) {
-                Ok(id) => id,
-                Err(_) => return Ok(()),
-            },
-        };
-
-        // ---- Extract ----
-
-        // Extract packet type (gives header format).
-        // Drop packet if unknown.
-        let packet_type_byte = data.split_to(1)[0];
+        // Extract packet type (gives header format). Drop packet if unknown.
+        let packet_type_byte = pkt.data.split_to(1)[0];
         let Ok(packet_type) = PacketType::try_from(packet_type_byte) else {
             return Ok(());
         };
 
-        // Extract header
+        // Extract header.
         let (channel, guarantees) = match packet_type {
-            PacketType::Test => {
-                let header = data.split_to(1);
+            PacketType::Unreliable => {
+                let header = pkt.data.split_to(1);
                 let channel = header[0];
                 (channel, Guarantees::None)
             }
         };
 
-        // ---- Forward ----
-
+        // Forward.
         self.incoming_message.send(Message {
-            data,
-            client,
+            data: pkt.data,
+            client_id,
             channel,
             guarantees,
         })?;
-
-        // ----
 
         Ok(())
     }
@@ -128,49 +120,46 @@ impl Handler {
     /// Convert a high-level `Message` into a raw `Packet` and send it.
     ///
     /// # Behavior
-    /// - Messages to unknown clients are dropped.
-    fn handle_outgoing_message(
-        &mut self,
-        Message {
-            data,
-            client,
-            channel,
-            guarantees,
-        }: Message,
-    ) -> Result<()> {
-        // ---- Client handling ----
-
-        let Some(addr) = self.clients.id_to_addr(client) else {
+    /// - If client is unknown -> Drop the message.
+    ///
+    /// # Errors
+    /// `outgoing_packet` disconnects.
+    fn handle_outgoing_message(&mut self, msg: Message) -> Result<()> {
+        // Client handling.
+        let Some(client_addr) = self.clients.id_to_addr(msg.client_id) else {
             return Ok(());
         };
 
-        // ---- Build ----
+        // Build packet. This will consume buffer memory.
+        let packet = self.build_packet(msg, client_addr);
 
-        // Build packet header based on guarantees
-        match guarantees {
-            Guarantees::None => {
-                self.outgoing_buffer.put_u8(PacketType::Test.into());
-                self.outgoing_buffer.put_u8(channel);
-            }
-        };
+        // Send packet.
+        self.outgoing_packet.send(packet)?;
 
-        // Append payload
-        self.outgoing_buffer.put(data);
-
-        // ---- Forward ----
-
-        let data = self.outgoing_buffer.split();
-        self.outgoing_packet.send(Packet { data, addr })?;
-
-        // ---- Buffer maintenance ----
-
+        // Maintain buffer for next packet.
         if self.outgoing_buffer.capacity() < MAX_PACKET_SIZE {
             self.outgoing_buffer
                 .reserve(BUFFER_SIZE - self.outgoing_buffer.capacity());
         }
 
-        // ----
-
         Ok(())
+    }
+
+    fn build_packet(&mut self, msg: Message, client_addr: SocketAddr) -> Packet {
+        // Append header.
+        match msg.guarantees {
+            Guarantees::None => {
+                self.outgoing_buffer.put_u8(PacketType::Unreliable.into());
+                self.outgoing_buffer.put_u8(msg.channel);
+            }
+        };
+
+        // Append payload.
+        self.outgoing_buffer.put(msg.data);
+
+        Packet {
+            data: self.outgoing_buffer.split(),
+            client_addr,
+        }
     }
 }

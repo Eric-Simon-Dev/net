@@ -8,7 +8,7 @@ use super::{BUFFER_SIZE, MAX_PACKET_SIZE, Packet, RING_SIZE};
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-/// Handles incoming UDP packets with a blocking functions.
+/// Handles incoming UDP packets with a blocking function.
 ///
 /// It buffers incoming packets and forwards them to the handler thread.
 pub struct UdpReceiver {
@@ -47,26 +47,20 @@ impl UdpReceiver {
     /// - `incoming_packet` is disconnected.
     /// - Receiving from the socket fails.
     pub fn recv(&mut self) -> Result<()> {
-        // ---- Receive packet ----
-
         // Receive a packet from the UDP socket.
-        // Bytes beyond `buffer` size are discarded.
+        // Bytes beyond buffer size are discarded.
         let data_len = self.socket.recv(&mut self.buffer)?;
         let data = self.buffer.split_to(data_len);
         let packet = Packet { data };
+
+        // Forward packet.
         self.incoming_packet.send(packet)?;
 
-        // ---- Resize buffer ----
-
-        // Ensure the buffer is properly sized for the next packet.
-        // Reallocate eventually.
-
+        // Maintain buffer for next packet.
         if self.buffer.capacity() < MAX_PACKET_SIZE {
             self.buffer.reserve(BUFFER_SIZE - self.buffer.capacity());
         }
         self.buffer.resize(MAX_PACKET_SIZE, 0);
-
-        // ----
 
         Ok(())
     }

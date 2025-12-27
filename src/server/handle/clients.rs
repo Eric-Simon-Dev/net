@@ -4,15 +4,14 @@ use rustc_hash::FxHashMap;
 
 use super::ClientId;
 
-type Error = Box<dyn std::error::Error>;
-type Result<T> = std::result::Result<T, Error>;
-
 /// Maintains a bidirectional mapping between client socket addresses
 /// and internally assigned client identifiers.
 pub struct Clients {
+    // INVARIANT: Bidirectionality.
+    // Registered addresses map to a unique ID and vice-versa.
     addr_to_id: FxHashMap<SocketAddr, ClientId>,
     id_to_addr: FxHashMap<ClientId, SocketAddr>,
-    next_id: usize,
+    next_id: u64,
 }
 
 // ---- Constructor ----
@@ -27,7 +26,7 @@ impl Clients {
     }
 }
 
-// ---- Accessors ----
+// ---- Mapping ----
 
 impl Clients {
     pub fn addr_to_id(&mut self, addr: SocketAddr) -> Option<ClientId> {
@@ -39,48 +38,54 @@ impl Clients {
     }
 }
 
-// ---- Add & Remove ----
+// ---- ID generation ----
 
 impl Clients {
-    /// Register a new client address and assign it a unique `ClientId`.
-    ///
-    /// # Errors
-    /// Client address is already registered.
-    pub fn add(&mut self, addr: SocketAddr) -> Result<ClientId> {
-        // Check for existing client
-        if self.addr_to_id.contains_key(&addr) {
-            return Err("already registered".into());
-        }
-
-        // Insert new client
-        let id = self.generate_client_id();
-        self.addr_to_id.insert(addr, id);
-        self.id_to_addr.insert(id, addr);
-
-        Ok(id)
-    }
-
     /// Generate a new unique `ClientId`.
+    ///
+    /// # Notes
+    /// If it weren't unique, it would broke the bidirectionality invariant.
     fn generate_client_id(&mut self) -> ClientId {
         let id = self.next_id;
         self.next_id += 1;
         ClientId(id)
     }
+}
 
-    /// Remove a client by its identifier.
+// ---- Add & Remove ----
+
+impl Clients {
+    /// Registers a new client address and assign it a unique `ClientId`.
     ///
-    /// # Errors
-    /// Client ID unknown.
-    pub fn remove(&mut self, id: ClientId) -> Result<()> {
-        // Remove from `id_to_addr` and ensure the client exists.
-        let addr = self
-            .id_to_addr
-            .remove(&id)
-            .ok_or_else(|| Error::from("unknown"))?;
+    /// # Preconditions
+    /// Client address not already registered.
+    ///
+    /// # Panics
+    /// Client address registered.
+    pub fn add(&mut self, addr: SocketAddr) -> ClientId {
+        if self.addr_to_id.contains_key(&addr) {
+            panic!("cannot add already registered client");
+        }
+        let id = self.generate_client_id();
+        // UNWRAPS: Bidirectionality invariant + check.
+        self.addr_to_id.insert(addr, id).unwrap();
+        self.id_to_addr.insert(id, addr).unwrap();
+        id
+    }
 
-        // Remove from `addr_to_id`.
-        self.addr_to_id.remove(&addr);
-
-        Ok(())
+    /// Removes a client by its identifier.
+    ///
+    /// # Preconditions
+    /// Client ID is registered.
+    ///
+    /// # Panics
+    /// Client ID not registered.
+    pub fn remove(&mut self, id: ClientId) {
+        if !self.id_to_addr.contains_key(&id) {
+            panic!("cannot remove unregistered client");
+        }
+        // UNWRAPS: Bidirectionality invariant + check.
+        let addr = self.id_to_addr.remove(&id).unwrap();
+        self.addr_to_id.remove(&addr).unwrap();
     }
 }

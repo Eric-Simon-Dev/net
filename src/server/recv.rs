@@ -47,27 +47,20 @@ impl UdpReceiver {
     /// - `incoming_packet` is disconnected.
     /// - Receiving from the socket fails.
     pub fn recv(&mut self) -> Result<()> {
-        // ---- Receive packet ----
-
         // Receive a packet from the UDP socket.
-        // Bytes beyond `buffer` size are discarded.
-
-        let (data_len, addr) = self.socket.recv_from(&mut self.buffer)?;
+        // Bytes beyond buffer size are discarded.
+        let (data_len, client_addr) = self.socket.recv_from(&mut self.buffer)?;
         let data = self.buffer.split_to(data_len);
-        let packet = Packet { data, addr };
+        let packet = Packet { data, client_addr };
+
+        // Forward packet.
         self.incoming_packet.send(packet)?;
 
-        // ---- Resize buffer ----
-
-        // Ensure the buffer is properly sized for the next packet.
-        // Reallocate eventually.
-
+        // Maintain buffer for next packet.
         if self.buffer.capacity() < MAX_PACKET_SIZE {
             self.buffer.reserve(BUFFER_SIZE - self.buffer.capacity());
         }
         self.buffer.resize(MAX_PACKET_SIZE, 0);
-
-        // ----
 
         Ok(())
     }

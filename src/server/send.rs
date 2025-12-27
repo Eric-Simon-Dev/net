@@ -21,7 +21,7 @@ impl UdpSender {
         }
     }
 
-    /// Send a single UDP packet fetch from `outgoing_packet`.
+    /// Send a single UDP packet fetched from `outgoing_packet`.
     ///
     /// # Behavior
     /// - Blocks on `outgoing_packet` until a packet arrives.
@@ -30,8 +30,8 @@ impl UdpSender {
     /// - `outgoing_packet` is disconnected.
     /// - Sending from the socket fails.
     pub fn send(&mut self) -> Result<()> {
-        let Packet { data, addr } = self.outgoing_packet.recv()?;
-        self.socket.send_to(&data, addr)?;
+        let Packet { data, client_addr } = self.outgoing_packet.recv()?;
+        self.socket.send_to(&data, client_addr)?;
         Ok(())
     }
 }

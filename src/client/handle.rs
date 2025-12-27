@@ -51,7 +51,7 @@ impl Handler {
     /// - a message is ready to be sent.
     ///
     /// # Errors
-    /// Any channel disconnects.
+    /// Any channel disconnect.
     pub fn handle(&mut self) -> Result<()> {
         select! {
             recv(self.incoming_packet) -> packet => {
@@ -70,75 +70,67 @@ impl Handler {
     /// If packet type is unknown -> Drop the packet.
     ///
     /// # Errors
-    /// One of the incoming channels disconnects.
-    fn handle_incoming_packet(&mut self, Packet { mut data }: Packet) -> Result<()> {
-        // ---- Extract ----
-
-        // Extract packet type (gives header format).
-        // Drop packet if unknown.
-        let packet_type_byte = data.split_to(1)[0];
+    /// `incoming_message` disconnects.
+    fn handle_incoming_packet(&mut self, mut pkt: Packet) -> Result<()> {
+        // Extract packet type (gives header format). Drop packet if unknown.
+        let packet_type_byte = pkt.data.split_to(1)[0];
         let Ok(packet_type) = PacketType::try_from(packet_type_byte) else {
             return Ok(());
         };
 
-        // Extract header
+        // Extract header.
         let (channel, guarantees) = match packet_type {
-            PacketType::Test => {
-                let header = data.split_to(1);
+            PacketType::Unreliable => {
+                let header = pkt.data.split_to(1);
                 let channel = header[0];
                 (channel, Guarantees::None)
             }
         };
 
-        // ---- Forward ----
-
+        // Forward.
         self.incoming_message.send(Message {
-            data,
+            data: pkt.data,
             channel,
             guarantees,
         })?;
-
-        // ----
 
         Ok(())
     }
 
     /// Convert a high-level `Message` into a raw `Packet` and send it.
-    fn handle_outgoing_message(
-        &mut self,
-        Message {
-            data,
-            channel,
-            guarantees,
-        }: Message,
-    ) -> Result<()> {
-        // ---- Build ----
+    ///
+    /// # Errors
+    /// `outgoing_packet` disconnects.
+    fn handle_outgoing_message(&mut self, msg: Message) -> Result<()> {
+        // Build packet. This will consume buffer memory.
+        let packet = self.build_packet(msg);
 
-        // Build packet header based on guarantees
-        match guarantees {
-            Guarantees::None => {
-                self.outgoing_buffer.put_u8(PacketType::Test.into());
-                self.outgoing_buffer.put_u8(channel);
-            }
-        };
+        // Send packet.
+        self.outgoing_packet.send(packet)?;
 
-        // Append payload
-        self.outgoing_buffer.put(data);
-
-        // ---- Forward ----
-
-        let data = self.outgoing_buffer.split();
-        self.outgoing_packet.send(Packet { data })?;
-
-        // ---- Buffer maintenance ----
-
+        // Maintain buffer for next packet.
         if self.outgoing_buffer.capacity() < MAX_PACKET_SIZE {
             self.outgoing_buffer
                 .reserve(BUFFER_SIZE - self.outgoing_buffer.capacity());
         }
 
-        // ----
-
         Ok(())
+    }
+
+    fn build_packet(&mut self, msg: Message) -> Packet {
+        // Append header.
+        match msg.guarantees {
+            Guarantees::None => {
+                self.outgoing_buffer.put_u8(PacketType::Unreliable.into());
+                self.outgoing_buffer.put_u8(msg.channel);
+            }
+        };
+
+        // Append payload.
+        self.outgoing_buffer.put(msg.data);
+
+        Packet {
+            data: self.outgoing_buffer.split(),
+        }
     }
 }

@@ -97,5 +97,5 @@ const MAX_PAYLOAD_SIZE: usize = MAX_PACKET_SIZE - MAX_HEADER_SIZE;
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
 enum PacketType {
-    Test,
+    Unreliable,
 }
