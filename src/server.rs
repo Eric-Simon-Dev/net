@@ -11,7 +11,7 @@ use std::{
 use bytes::BytesMut;
 use crossbeam::channel::{Receiver, Sender, bounded};
 
-use super::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
+use crate::protocol::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
 use handle::Handler;
 use recv::UdpReceiver;
 use send::UdpSender;

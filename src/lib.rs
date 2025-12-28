@@ -80,22 +80,8 @@ mod doc {
 }
 
 pub mod client;
+mod protocol;
 pub mod server;
 
 #[cfg(test)]
 mod tests;
-
-// =========================================================================
-// Shared
-// =========================================================================
-// Common to both `client` and `server`.
-
-const MAX_PACKET_SIZE: usize = 1024;
-const MAX_HEADER_SIZE: usize = 32;
-const MAX_PAYLOAD_SIZE: usize = MAX_PACKET_SIZE - MAX_HEADER_SIZE;
-
-#[repr(u8)]
-#[derive(Debug, PartialEq, Eq, num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-enum PacketType {
-    Unreliable,
-}
