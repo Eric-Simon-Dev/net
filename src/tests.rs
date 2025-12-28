@@ -4,7 +4,9 @@ use bytes::BytesMut;
 
 use crate::{client, server};
 
-/// Ensure that a server and a client can successfully bind, listen, and connect.
+/// Ensure that :
+/// - A server can successfully bind and listen.
+/// - A client can succesfully bind and connect to a server.
 #[test]
 fn connection() {
     let mut server = server::Server::new("0:12012").unwrap();
@@ -24,7 +26,8 @@ fn multiple_exchanges() {
         run_server();
     });
 
-    // Give the server time to start listening so the client connection succeeds.
+    // Give the server time to start listening,
+    // so the client connection succeeds.
     thread::sleep(Duration::from_millis(100));
 
     thread::spawn(|| {
@@ -38,7 +41,7 @@ fn run_server() {
     let mut server = Server::new("0:12014").unwrap();
     let (sender, receiver) = server.listen().unwrap();
 
-    // Receive a message and send back `msg + 1` sixteen times.
+    // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
         let mut msg = receiver.recv().unwrap();
         msg.data[0] += 1;

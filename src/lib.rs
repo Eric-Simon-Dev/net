@@ -80,8 +80,9 @@ mod doc {
 }
 
 pub mod client;
-mod protocol;
 pub mod server;
+
+mod protocol;
 
 #[cfg(test)]
 mod tests;
