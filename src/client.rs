@@ -1,20 +1,16 @@
-mod handle;
-mod recv;
-mod send;
+mod handler_thread;
+mod receiver_thread;
+mod sender_thread;
 
 use std::{
     io,
     net::{ToSocketAddrs, UdpSocket},
-    thread,
 };
 
 use bytes::BytesMut;
 use crossbeam::channel::{Receiver, Sender, bounded};
 
 use crate::protocol::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
-use handle::Handler;
-use recv::UdpReceiver;
-use send::UdpSender;
 
 // ---- Buffering constants ----
 
@@ -83,9 +79,9 @@ impl Client {
 
         // Spawn threads to pump network data asynchronuously.
 
-        self.spawn_receiver_thread(incoming_packet.0)?;
-        self.spawn_sender_thread(outgoing_packet.1)?;
-        self.spawn_handler_thread(
+        receiver_thread::spawn(self.socket.try_clone()?, incoming_packet.0);
+        sender_thread::spawn(self.socket.try_clone()?, outgoing_packet.1);
+        handler_thread::spawn(
             incoming_packet.1,
             outgoing_message.1,
             outgoing_packet.0,
@@ -95,50 +91,6 @@ impl Client {
         // ----
 
         Ok((outgoing_message.0, incoming_message.1))
-    }
-
-    /// # Errors
-    /// Fail to clone client's UDP socket.
-    fn spawn_receiver_thread(&mut self, incoming_packet: Sender<Packet>) -> io::Result<()> {
-        let mut receiver = UdpReceiver::new(self.socket.try_clone()?, incoming_packet);
-        thread::spawn(move || {
-            while receiver.recv().is_ok() {
-                continue;
-            }
-        });
-        Ok(())
-    }
-
-    /// # Errors
-    /// Fail to clone client's UDP socket.
-    fn spawn_sender_thread(&mut self, outgoing_packet: Receiver<Packet>) -> io::Result<()> {
-        let mut sender = UdpSender::new(self.socket.try_clone()?, outgoing_packet);
-        thread::spawn(move || {
-            while sender.send().is_ok() {
-                continue;
-            }
-        });
-        Ok(())
-    }
-
-    fn spawn_handler_thread(
-        &mut self,
-        incoming_packet: Receiver<Packet>,
-        outgoing_message: Receiver<Message>,
-        outgoing_packet: Sender<Packet>,
-        incoming_message: Sender<Message>,
-    ) {
-        let mut handler = Handler::new(
-            incoming_packet,
-            outgoing_message,
-            outgoing_packet,
-            incoming_message,
-        );
-        thread::spawn(move || {
-            while handler.handle().is_ok() {
-                continue;
-            }
-        });
     }
 }
 

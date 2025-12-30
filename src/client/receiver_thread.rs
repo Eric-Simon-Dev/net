@@ -1,4 +1,4 @@
-use std::net::UdpSocket;
+use std::{net::UdpSocket, thread};
 
 use bytes::BytesMut;
 use crossbeam::channel::Sender;
@@ -8,10 +8,19 @@ use super::{BUFFER_SIZE, MAX_PACKET_SIZE, Packet, RING_SIZE};
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
+pub fn spawn(socket: UdpSocket, incoming_packet: Sender<Packet>) {
+    thread::spawn(move || {
+        let mut receiver = UdpReceiver::new(socket, incoming_packet);
+        while receiver.recv().is_ok() {
+            continue;
+        }
+    });
+}
+
 /// Handles incoming UDP packets with a blocking function.
 ///
 /// It buffers incoming packets and forwards them to the handler thread.
-pub struct UdpReceiver {
+struct UdpReceiver {
     socket: UdpSocket,
 
     /// Internal buffer for incoming UDP packets.
@@ -27,7 +36,7 @@ impl UdpReceiver {
     ///
     /// Internal buffer is initialized with a capacity of `RING_SIZE`
     /// and a size of `MAX_PACKET_SIZE`.
-    pub fn new(socket: UdpSocket, incoming_packet: Sender<Packet>) -> Self {
+    fn new(socket: UdpSocket, incoming_packet: Sender<Packet>) -> Self {
         let mut buffer = BytesMut::with_capacity(RING_SIZE);
         buffer.resize(MAX_PACKET_SIZE, 0);
         Self {
@@ -46,7 +55,7 @@ impl UdpReceiver {
     /// # Errors
     /// - `incoming_packet` is disconnected.
     /// - Receiving from the socket fails.
-    pub fn recv(&mut self) -> Result<()> {
+    fn recv(&mut self) -> Result<()> {
         // Receive a packet from the UDP socket.
         // Bytes beyond buffer size are discarded.
         let data_len = self.socket.recv(&mut self.buffer)?;
