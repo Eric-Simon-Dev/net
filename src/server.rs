@@ -94,25 +94,21 @@ impl Server {
 #[derive(Debug, Clone)]
 pub struct Message {
     pub data: BytesMut,
-    pub client_id: ClientId,
+    pub client_addr: SocketAddr,
     pub channel: u8,
     pub guarantees: Guarantees,
 }
 
-/// Unique identifier for a client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ClientId(u64);
+impl Message {
+    /// Maximum size (in bytes) for data.
+    pub const MAX_DATA: usize = MAX_PAYLOAD_SIZE;
+}
 
 /// Reliability guarantees for a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Guarantees {
     None,
-}
-
-impl Message {
-    /// Maximum allowed payload size for a message.
-    pub const MAX_DATA_SIZE: usize = MAX_PAYLOAD_SIZE;
 }
 
 // ---- Packet (private) ----

@@ -107,16 +107,16 @@ pub struct Message {
     pub guarantees: Guarantees,
 }
 
+impl Message {
+    /// Maximum size (in bytes) for data.
+    pub const MAX_DATA: usize = MAX_PAYLOAD_SIZE;
+}
+
 /// Reliability guarantees for a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Guarantees {
     None,
-}
-
-impl Message {
-    /// Maximum allowed payload size for a message.
-    pub const MAX_DATA_SIZE: usize = MAX_PAYLOAD_SIZE;
 }
 
 // ---- Packet (private) ----

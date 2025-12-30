@@ -1,17 +1,13 @@
-pub mod clients;
-
-use std::{net::SocketAddr, thread};
+use std::{net::SocketAddr, thread, time::Instant};
 
 use bytes::{BufMut, BytesMut};
 use crossbeam::{
     channel::{Receiver, Sender},
     select,
 };
+use rustc_hash::FxHashMap;
 
-use super::{
-    BUFFER_SIZE, ClientId, Guarantees, MAX_PACKET_SIZE, Message, Packet, PacketType, RING_SIZE,
-};
-use clients::Clients;
+use super::{BUFFER_SIZE, Guarantees, MAX_PACKET_SIZE, Message, Packet, PacketType, RING_SIZE};
 
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
@@ -40,8 +36,7 @@ pub fn spawn(
 /// - converting packets to messages and vice versa,
 /// - routing data between network and application channels.
 struct Handler {
-    /// Client registry mapping socket addresses to client IDs.
-    clients: Clients,
+    clients: FxHashMap<SocketAddr, Client>,
 
     /// Buffer for building outgoing packets.
     /// Mainly to adjust header size.
@@ -54,6 +49,10 @@ struct Handler {
     incoming_message: Sender<Message>,
 }
 
+struct Client {
+    last_heard: Instant,
+}
+
 // ---- Constructor ----
 
 impl Handler {
@@ -64,7 +63,7 @@ impl Handler {
         incoming_message: Sender<Message>,
     ) -> Self {
         Self {
-            clients: Clients::new(),
+            clients: Default::default(),
             outgoing_buffer: BytesMut::with_capacity(RING_SIZE),
             incoming_packet,
             outgoing_packet,
@@ -105,10 +104,17 @@ impl Handler {
     /// `incoming_message` disconnects.
     fn handle_incoming_packet(&mut self, mut pkt: Packet) -> Result<()> {
         // Client handling.
-        let client_id = self
-            .clients
-            .addr_to_id(pkt.client_addr)
-            .unwrap_or_else(|| self.clients.add(pkt.client_addr));
+        match self.clients.get_mut(&pkt.client_addr) {
+            Some(client) => {
+                client.last_heard = Instant::now();
+            }
+            None => {
+                let client = Client {
+                    last_heard: Instant::now(),
+                };
+                self.clients.insert(pkt.client_addr, client);
+            }
+        }
 
         // Extract packet type (gives header format). Drop packet if unknown.
         let packet_type_byte = pkt.data.split_to(1)[0];
@@ -128,7 +134,7 @@ impl Handler {
         // Forward.
         self.incoming_message.send(Message {
             data: pkt.data,
-            client_id,
+            client_addr: pkt.client_addr,
             channel,
             guarantees,
         })?;
@@ -145,12 +151,12 @@ impl Handler {
     /// `outgoing_packet` disconnects.
     fn handle_outgoing_message(&mut self, msg: Message) -> Result<()> {
         // Client handling.
-        let Some(client_addr) = self.clients.id_to_addr(msg.client_id) else {
+        if !self.clients.contains_key(&msg.client_addr) {
             return Ok(());
         };
 
         // Build packet. This will consume buffer memory.
-        let packet = self.build_packet(msg, client_addr);
+        let packet = self.build_packet(msg);
 
         // Send packet.
         self.outgoing_packet.send(packet)?;
@@ -164,7 +170,7 @@ impl Handler {
         Ok(())
     }
 
-    fn build_packet(&mut self, msg: Message, client_addr: SocketAddr) -> Packet {
+    fn build_packet(&mut self, msg: Message) -> Packet {
         // Append header.
         match msg.guarantees {
             Guarantees::None => {
@@ -178,7 +184,7 @@ impl Handler {
 
         Packet {
             data: self.outgoing_buffer.split(),
-            client_addr,
+            client_addr: msg.client_addr,
         }
     }
 }
