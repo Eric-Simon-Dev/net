@@ -7,9 +7,9 @@ use super::Packet;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-pub fn spawn(socket: UdpSocket, outgoing_packet: Receiver<Packet>) {
+pub fn spawn(socket: UdpSocket, outgoing_packets: Receiver<Packet>) {
     thread::spawn(move || {
-        let mut sender = UdpSender::new(socket, outgoing_packet);
+        let mut sender = UdpSender::new(socket, outgoing_packets);
         while sender.send().is_ok() {
             continue;
         }
@@ -19,27 +19,27 @@ pub fn spawn(socket: UdpSocket, outgoing_packet: Receiver<Packet>) {
 /// Handles outgoing UDP packets with a blocking function.
 struct UdpSender {
     socket: UdpSocket,
-    outgoing_packet: Receiver<Packet>,
+    outgoing_packets: Receiver<Packet>,
 }
 
 impl UdpSender {
-    fn new(socket: UdpSocket, outgoing_packet: Receiver<Packet>) -> Self {
+    fn new(socket: UdpSocket, outgoing_packets: Receiver<Packet>) -> Self {
         Self {
             socket,
-            outgoing_packet,
+            outgoing_packets,
         }
     }
 
-    /// Send a single UDP packet fetched from `outgoing_packet`.
+    /// Send a single UDP packet fetched from `outgoing_packets`.
     ///
     /// # Behavior
-    /// - Blocks on `outgoing_packet` until a packet arrives.
+    /// - Blocks on `outgoing_packets` until a packet arrives.
     ///
     /// # Errors
-    /// - `outgoing_packet` is disconnected.
+    /// - `outgoing_packets` is disconnected.
     /// - Sending from the socket fails.
     fn send(&mut self) -> Result<()> {
-        let Packet { data } = self.outgoing_packet.recv()?;
+        let Packet { data } = self.outgoing_packets.recv()?;
         self.socket.send(&data)?;
         Ok(())
     }

@@ -14,9 +14,9 @@ use crate::protocol::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
 
 // ---- Buffering constants ----
 
-const MAX_PACKET_IN_FLIGHT: usize = 1024;
-const BUFFER_SIZE: usize = MAX_PACKET_SIZE * MAX_PACKET_IN_FLIGHT;
-const RING_SIZE: usize = BUFFER_SIZE * 16;
+const MAX_PACKETS_PER_CHANNEL: usize = 64;
+const BUFFER_SIZE: usize = MAX_PACKET_SIZE * MAX_PACKETS_PER_CHANNEL;
+const RING_SIZE: usize = BUFFER_SIZE * 256;
 
 // ==================================================================
 // Server
@@ -60,28 +60,27 @@ impl Server {
 
         // Create channels to pass network data between threads.
 
-        let cap = MAX_PACKET_IN_FLIGHT;
-        let incoming_packet = bounded(cap);
-        let outgoing_packet = bounded(cap);
-        let incoming_message = bounded(cap);
-        let outgoing_message = bounded(cap);
+        let incoming_packets = bounded(MAX_PACKETS_PER_CHANNEL);
+        let outgoing_packets = bounded(MAX_PACKETS_PER_CHANNEL);
+        let incoming_messages = bounded(MAX_PACKETS_PER_CHANNEL);
+        let outgoing_messages = bounded(MAX_PACKETS_PER_CHANNEL);
 
         // ---- Threads ----
 
         // Spawn threads to pump network data asynchronuously.
 
-        receiver_thread::spawn(self.socket.try_clone()?, incoming_packet.0);
-        sender_thread::spawn(self.socket.try_clone()?, outgoing_packet.1);
+        receiver_thread::spawn(self.socket.try_clone()?, incoming_packets.0);
+        sender_thread::spawn(self.socket.try_clone()?, outgoing_packets.1);
         handler_thread::spawn(
-            incoming_packet.1,
-            outgoing_message.1,
-            outgoing_packet.0,
-            incoming_message.0,
+            incoming_packets.1,
+            outgoing_messages.1,
+            outgoing_packets.0,
+            incoming_messages.0,
         );
 
         // ----
 
-        Ok((outgoing_message.0, incoming_message.1))
+        Ok((outgoing_messages.0, incoming_messages.1))
     }
 }
 
@@ -100,8 +99,8 @@ pub struct Message {
 }
 
 impl Message {
-    /// Maximum size (in bytes) for data.
-    pub const MAX_DATA: usize = MAX_PAYLOAD_SIZE;
+    /// Maximum size (in bytes) for `data`.
+    pub const MAX_DATA_SIZE: usize = MAX_PAYLOAD_SIZE;
 }
 
 /// Reliability guarantees for a message.

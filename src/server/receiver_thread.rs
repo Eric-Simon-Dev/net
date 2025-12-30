@@ -8,9 +8,9 @@ use super::{BUFFER_SIZE, MAX_PACKET_SIZE, Packet, RING_SIZE};
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
-pub fn spawn(socket: UdpSocket, incoming_packet: Sender<Packet>) {
+pub fn spawn(socket: UdpSocket, incoming_packets: Sender<Packet>) {
     thread::spawn(move || {
-        let mut receiver = UdpReceiver::new(socket, incoming_packet);
+        let mut receiver = UdpReceiver::new(socket, incoming_packets);
         while receiver.recv().is_ok() {
             continue;
         }
@@ -28,7 +28,7 @@ struct UdpReceiver {
     /// Excess bytes are discarded according to the socket's `.recv_from()` specification.
     buffer: BytesMut,
 
-    incoming_packet: Sender<Packet>,
+    incoming_packets: Sender<Packet>,
 }
 
 impl UdpReceiver {
@@ -36,13 +36,13 @@ impl UdpReceiver {
     ///
     /// Internal buffer is initialized with a capacity of `RING_SIZE`
     /// and a size of `MAX_PACKET_SIZE`.
-    fn new(socket: UdpSocket, incoming_packet: Sender<Packet>) -> Self {
+    fn new(socket: UdpSocket, incoming_packets: Sender<Packet>) -> Self {
         let mut buffer = BytesMut::with_capacity(RING_SIZE);
         buffer.resize(MAX_PACKET_SIZE, 0);
         Self {
             socket,
             buffer,
-            incoming_packet,
+            incoming_packets,
         }
     }
 
@@ -50,10 +50,10 @@ impl UdpReceiver {
     ///
     /// # Behavior
     /// - Blocks on `socket.recv_from()` until a packet arrives.
-    /// - Blocks if `incoming_packet` is full until space is available.
+    /// - Blocks if `incoming_packets` is full until space is available.
     ///
     /// # Errors
-    /// - `incoming_packet` is disconnected.
+    /// - `incoming_packets` is disconnected.
     /// - Receiving from the socket fails.
     fn recv(&mut self) -> Result<()> {
         // Receive a packet from the UDP socket.
@@ -63,7 +63,7 @@ impl UdpReceiver {
         let packet = Packet { data, client_addr };
 
         // Forward packet.
-        self.incoming_packet.send(packet)?;
+        self.incoming_packets.send(packet)?;
 
         // Maintain buffer for next packet.
         if self.buffer.capacity() < MAX_PACKET_SIZE {

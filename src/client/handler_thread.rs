@@ -12,17 +12,17 @@ type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
 pub fn spawn(
-    incoming_packet: Receiver<Packet>,
-    outgoing_message: Receiver<Message>,
-    outgoing_packet: Sender<Packet>,
-    incoming_message: Sender<Message>,
+    incoming_packets: Receiver<Packet>,
+    outgoing_messages: Receiver<Message>,
+    outgoing_packets: Sender<Packet>,
+    incoming_messages: Sender<Message>,
 ) {
     thread::spawn(move || {
         let mut handler = Handler::new(
-            incoming_packet,
-            outgoing_message,
-            outgoing_packet,
-            incoming_message,
+            incoming_packets,
+            outgoing_messages,
+            outgoing_packets,
+            incoming_messages,
         );
         while handler.handle().is_ok() {
             continue;
@@ -39,27 +39,27 @@ struct Handler {
     outgoing_buffer: BytesMut,
 
     // ---- Channels ----
-    incoming_packet: Receiver<Packet>,
-    outgoing_message: Receiver<Message>,
-    outgoing_packet: Sender<Packet>,
-    incoming_message: Sender<Message>,
+    incoming_packets: Receiver<Packet>,
+    outgoing_messages: Receiver<Message>,
+    outgoing_packets: Sender<Packet>,
+    incoming_messages: Sender<Message>,
 }
 
 // ---- Constructor ----
 
 impl Handler {
     fn new(
-        incoming_packet: Receiver<Packet>,
-        outgoing_message: Receiver<Message>,
-        outgoing_packet: Sender<Packet>,
-        incoming_message: Sender<Message>,
+        incoming_packets: Receiver<Packet>,
+        outgoing_messages: Receiver<Message>,
+        outgoing_packets: Sender<Packet>,
+        incoming_messages: Sender<Message>,
     ) -> Self {
         Self {
             outgoing_buffer: BytesMut::with_capacity(RING_SIZE),
-            incoming_packet,
-            outgoing_packet,
-            incoming_message,
-            outgoing_message,
+            incoming_packets,
+            outgoing_packets,
+            incoming_messages,
+            outgoing_messages,
         }
     }
 }
@@ -75,10 +75,10 @@ impl Handler {
     /// Any channel disconnect.
     fn handle(&mut self) -> Result<()> {
         select! {
-            recv(self.incoming_packet) -> packet => {
+            recv(self.incoming_packets) -> packet => {
                 self.handle_incoming_packet(packet?)?;
             }
-            recv(self.outgoing_message) -> message => {
+            recv(self.outgoing_messages) -> message => {
                 self.handle_outgoing_message(message?)?;
             }
         }
@@ -91,7 +91,7 @@ impl Handler {
     /// If packet type is unknown -> Drop the packet.
     ///
     /// # Errors
-    /// `incoming_message` disconnects.
+    /// `incoming_messages` disconnects.
     fn handle_incoming_packet(&mut self, mut pkt: Packet) -> Result<()> {
         // Extract packet type (gives header format). Drop packet if unknown.
         let packet_type_byte = pkt.data.split_to(1)[0];
@@ -109,7 +109,7 @@ impl Handler {
         };
 
         // Forward.
-        self.incoming_message.send(Message {
+        self.incoming_messages.send(Message {
             data: pkt.data,
             channel,
             guarantees,
@@ -121,13 +121,13 @@ impl Handler {
     /// Convert a high-level `Message` into a raw `Packet` and send it.
     ///
     /// # Errors
-    /// `outgoing_packet` disconnects.
+    /// `outgoing_packets` disconnects.
     fn handle_outgoing_message(&mut self, msg: Message) -> Result<()> {
         // Build packet. This will consume buffer memory.
         let packet = self.build_packet(msg);
 
         // Send packet.
-        self.outgoing_packet.send(packet)?;
+        self.outgoing_packets.send(packet)?;
 
         // Maintain buffer for next packet.
         if self.outgoing_buffer.capacity() < MAX_PACKET_SIZE {
