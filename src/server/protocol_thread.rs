@@ -1,10 +1,11 @@
-use std::thread;
+use std::{net::SocketAddr, thread, time::Instant};
 
 use bytes::{BufMut, BytesMut};
 use crossbeam::{
     channel::{Receiver, Sender},
     select,
 };
+use rustc_hash::FxHashMap;
 
 use super::{BUFFER_SIZE, Guarantees, MAX_PACKET_SIZE, Message, Packet, PacketType, RING_SIZE};
 
@@ -18,22 +19,25 @@ pub fn spawn(
     incoming_messages: Sender<Message>,
 ) {
     thread::spawn(move || {
-        let mut handler = Handler::new(
+        let mut protocol = Protocol::new(
             incoming_packets,
             outgoing_messages,
             outgoing_packets,
             incoming_messages,
         );
-        while handler.handle().is_ok() {
+        while protocol.apply().is_ok() {
             continue;
         }
     });
 }
 
 /// Central handler responsible for:
+/// - managing connected clients,
 /// - converting packets to messages and vice versa,
 /// - routing data between network and application channels.
-struct Handler {
+struct Protocol {
+    clients: FxHashMap<SocketAddr, Client>,
+
     /// Buffer for building outgoing packets.
     /// Mainly to adjust header size.
     outgoing_buffer: BytesMut,
@@ -45,9 +49,13 @@ struct Handler {
     incoming_messages: Sender<Message>,
 }
 
+struct Client {
+    last_heard: Instant,
+}
+
 // ---- Constructor ----
 
-impl Handler {
+impl Protocol {
     fn new(
         incoming_packets: Receiver<Packet>,
         outgoing_messages: Receiver<Message>,
@@ -55,6 +63,7 @@ impl Handler {
         incoming_messages: Sender<Message>,
     ) -> Self {
         Self {
+            clients: Default::default(),
             outgoing_buffer: BytesMut::with_capacity(RING_SIZE),
             incoming_packets,
             outgoing_packets,
@@ -66,14 +75,14 @@ impl Handler {
 
 // ---- Handling ----
 
-impl Handler {
-    /// Process a single event, blocking until either:
+impl Protocol {
+    /// Apply protocol on a single event, blocking until either:
     /// - a packet is received from the network, or
     /// - a message is ready to be sent.
     ///
     /// # Errors
     /// Any channel disconnect.
-    fn handle(&mut self) -> Result<()> {
+    fn apply(&mut self) -> Result<()> {
         select! {
             recv(self.incoming_packets) -> packet => {
                 self.handle_incoming_packet(packet?)?;
@@ -88,11 +97,25 @@ impl Handler {
     /// Convert an incoming `Packet` into a high-level `Message`.
     ///
     /// # Behavior
-    /// If packet type is unknown -> Drop the packet.
+    /// - If client is unknown -> Register it.
+    /// - If packet type is unknown -> Drop the packet.
     ///
     /// # Errors
     /// `incoming_messages` disconnects.
     fn handle_incoming_packet(&mut self, mut pkt: Packet) -> Result<()> {
+        // Client handling.
+        match self.clients.get_mut(&pkt.client_addr) {
+            Some(client) => {
+                client.last_heard = Instant::now();
+            }
+            None => {
+                let client = Client {
+                    last_heard: Instant::now(),
+                };
+                self.clients.insert(pkt.client_addr, client);
+            }
+        }
+
         // Extract packet type (gives header format). Drop packet if unknown.
         let packet_type_byte = pkt.data.split_to(1)[0];
         let Ok(packet_type) = PacketType::try_from(packet_type_byte) else {
@@ -111,6 +134,7 @@ impl Handler {
         // Forward.
         self.incoming_messages.send(Message {
             data: pkt.data,
+            client_addr: pkt.client_addr,
             channel,
             guarantees,
         })?;
@@ -120,9 +144,17 @@ impl Handler {
 
     /// Convert a high-level `Message` into a raw `Packet` and send it.
     ///
+    /// # Behavior
+    /// - If client is unknown -> Drop the message.
+    ///
     /// # Errors
     /// `outgoing_packets` disconnects.
     fn handle_outgoing_message(&mut self, msg: Message) -> Result<()> {
+        // Client handling.
+        if !self.clients.contains_key(&msg.client_addr) {
+            return Ok(());
+        };
+
         // Build packet. This will consume buffer memory.
         let packet = self.build_packet(msg);
 
@@ -152,6 +184,7 @@ impl Handler {
 
         Packet {
             data: self.outgoing_buffer.split(),
+            client_addr: msg.client_addr,
         }
     }
 }

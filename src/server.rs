@@ -1,4 +1,4 @@
-mod handler_thread;
+mod protocol_thread;
 mod receiver_thread;
 mod sender_thread;
 
@@ -71,7 +71,7 @@ impl Server {
 
         receiver_thread::spawn(self.socket.try_clone()?, incoming_packets.0);
         sender_thread::spawn(self.socket.try_clone()?, outgoing_packets.1);
-        handler_thread::spawn(
+        protocol_thread::spawn(
             incoming_packets.1,
             outgoing_messages.1,
             outgoing_packets.0,

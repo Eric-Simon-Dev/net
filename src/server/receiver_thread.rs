@@ -19,7 +19,7 @@ pub fn spawn(socket: UdpSocket, incoming_packets: Sender<Packet>) {
 
 /// Handles incoming UDP packets with a blocking function.
 ///
-/// It buffers incoming packets and forwards them to the handler thread.
+/// It buffers incoming packets and forwards them to the protocol thread.
 struct UdpReceiver {
     socket: UdpSocket,
 

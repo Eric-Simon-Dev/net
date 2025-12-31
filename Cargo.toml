@@ -1,10 +1,17 @@
 [package]
 name = "net"
-version = "2.0.1"
+version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Simplify bytes ownership manipulation (exposed in API).
 bytes = "1"
+
+# More flexible (MPMC) and optimized (untested) than standard channels (exposed in API).
 crossbeam = "0"
+
+# Hashmaps focused on speed rather than security.
 rustc-hash = "2"
+
+# Conversion between enums and their underlying integer representations.
 num_enum = "0"
