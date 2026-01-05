@@ -23,12 +23,7 @@ pub struct UdpSocketHandler {
     // ---- Buffers ----
     read_buf: BytesMut,
     write_buf: BytesMut,
-    packets_queue: VecDeque<Packet>,
-}
-
-struct Packet {
-    payload: Bytes,
-    peer_addr: SocketAddr,
+    payloads_queue: VecDeque<(Bytes, SocketAddr)>,
 }
 
 impl UdpSocketHandler {
@@ -45,7 +40,7 @@ impl UdpSocketHandler {
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
-            packets_queue: VecDeque::new(),
+            payloads_queue: VecDeque::new(),
         })
     }
 
@@ -69,7 +64,7 @@ impl UdpSocketHandler {
 
         // Extract payload and queue it.
         let payload = self.write_buf.split().freeze();
-        self.packets_queue.push_front(Packet { payload, peer_addr });
+        self.payloads_queue.push_front((payload, peer_addr));
 
         // Update socket interest
         if !self.current_interest.writable {
@@ -144,14 +139,14 @@ impl UdpSocketHandler {
 
     /// Try draining write queue until it would block.
     fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(packet) = self.packets_queue.pop_back() {
-            match self.socket.send_to(&packet.payload, packet.peer_addr) {
+        while let Some((payload, peer_addr)) = self.payloads_queue.pop_back() {
+            match self.socket.send_to(&payload, peer_addr) {
                 // Complete write.
                 Ok(_) => (),
 
                 // Socket full.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.packets_queue.push_back(packet);
+                    self.payloads_queue.push_back((payload, peer_addr));
                     return Ok(());
                 }
 
