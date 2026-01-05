@@ -15,36 +15,31 @@ use super::IncomingMessage;
 type Result<T> = std::result::Result<T, TcpStreamHandlerError>;
 
 pub struct TcpStreamHandler {
+    // ---- Socket ----
     socket: TcpStream,
-    key: usize,
-
-    /// Current poller interest.
     current_interest: Event,
 
+    // ---- Buffers ----
     read_buf: BytesMut,
-
     write_buf: BytesMut,
-
-    /// Sendable payloads, already contain their size field.
-    write_queue: VecDeque<Bytes>,
+    payloads_queue: VecDeque<Bytes>,
 }
 
 impl TcpStreamHandler {
-    pub fn new(
-        tcp_stream: TcpStream,
-        poller: &Poller,
-        key: usize,
-    ) -> io::Result<Self> {
+    pub fn new(tcp_stream: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
+        // Set socket to non-blocking.
         tcp_stream.set_nonblocking(true)?;
+
+        // Set interest to readable.
         let current_interest = Event::readable(key);
         (unsafe { poller.add_with_mode(&tcp_stream, current_interest, PollMode::Level) })?;
+
         Ok(Self {
             socket: tcp_stream,
-            key,
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
-            write_queue: VecDeque::new(),
+            payloads_queue: VecDeque::new(),
         })
     }
 
@@ -61,7 +56,7 @@ impl TcpStreamHandler {
 
         // Extract payload and queue it.
         let payload = self.write_buf.split().freeze();
-        self.write_queue.push_front(payload);
+        self.payloads_queue.push_front(payload);
 
         // Update socket interest
         if !self.current_interest.writable {
@@ -80,7 +75,7 @@ impl TcpStreamHandler {
     ) -> Result<()> {
         if event.readable {
             self.drain_socket()?;
-            while let Some(message) = self.next_message()? {
+            while let Some(message) = self.next_message(event.key)? {
                 incoming.send(message)?;
             }
         }
@@ -111,7 +106,7 @@ impl TcpStreamHandler {
     }
 
     /// Parse read buffer for next message.
-    fn next_message(&mut self) -> Result<Option<IncomingMessage>> {
+    fn next_message(&mut self, key: usize) -> Result<Option<IncomingMessage>> {
         let size = match read_size(&self.read_buf) {
             Ok(size) => size,
             Err(SizeError::BufferTooSmall) => return Ok(None),
@@ -135,7 +130,7 @@ impl TcpStreamHandler {
             Ok(Some(IncomingMessage {
                 data,
                 channel,
-                client_key: self.key,
+                client_key: key,
             }))
         } else {
             Ok(None)
@@ -144,12 +139,12 @@ impl TcpStreamHandler {
 
     /// Try draining write queue until it would block.
     fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(mut payload) = self.write_queue.pop_back() {
+        while let Some(mut payload) = self.payloads_queue.pop_back() {
             match self.socket.write(&payload) {
                 // Partial write : Remove written bytes and push back into queue.
                 Ok(n) if n < payload.len() => {
                     let _ = payload.split_to(n);
-                    self.write_queue.push_back(payload);
+                    self.payloads_queue.push_back(payload);
                 }
 
                 // Complete write.
@@ -157,7 +152,7 @@ impl TcpStreamHandler {
 
                 // Socket full.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.write_queue.push_back(payload);
+                    self.payloads_queue.push_back(payload);
                     return Ok(());
                 }
 

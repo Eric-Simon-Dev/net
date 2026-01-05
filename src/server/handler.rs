@@ -43,6 +43,7 @@ pub struct Handler {
 struct Client {
     // ---- Data ----
     addr: SocketAddr,
+    seq: u64,
 
     // ---- Handler ----
     tcp: TcpStreamHandler,
@@ -72,13 +73,13 @@ impl Handler {
                 self.tcp
                     .handle_event(poller, &mut self.clients, &mut self.addr_to_key)?
             }
-            UDP_SOCKET_KEY => self.udp.handle_event(
-                poller,
-                event,
-                &mut self.incoming,
-                &self.addr_to_key,
-            )?,
-            key => self.clients[key].tcp.handle_event(poller, event, &mut self.incoming)?,
+            UDP_SOCKET_KEY => {
+                self.udp
+                    .handle_event(poller, event, &mut self.incoming, &self.addr_to_key)?
+            }
+            key => self.clients[key]
+                .tcp
+                .handle_event(poller, event, &mut self.incoming)?,
         }
         Ok(())
     }
@@ -96,17 +97,19 @@ impl Handler {
     fn handle_outgoing_message(&mut self, poller: &Poller, message: OutgoingMessage) -> Result<()> {
         match message.guarantees {
             Guarantees::None => {
-                // Get peer address of drop message.
-                let Some(peer_addr) = self
-                    .clients
-                    .get(message.client_key)
-                    .map(|client| client.addr)
-                else {
+                // Get client or drop message.
+                let Some(client) = self.clients.get_mut(message.client_key) else {
                     return Ok(());
                 };
 
-                self.udp
-                    .queue_message(poller, &message.data, message.channel, peer_addr)?;
+                self.udp.queue_message(
+                    poller,
+                    &message.data,
+                    message.channel,
+                    client.addr,
+                    client.seq,
+                )?;
+                client.seq += 1;
             }
             Guarantees::Delivery | Guarantees::DeliveryOrder => {
                 // Get client or drop message.
@@ -114,7 +117,9 @@ impl Handler {
                     return Ok(());
                 };
 
-                client.tcp.queue_message(poller, &message.data, message.channel)?;
+                client
+                    .tcp
+                    .queue_message(poller, &message.data, message.channel)?;
             }
         }
 

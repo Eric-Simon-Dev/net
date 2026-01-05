@@ -16,16 +16,14 @@ type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
 pub struct UdpSocketHandler {
+    // ---- Socket ----
     socket: UdpSocket,
-
-    /// Current poller interest.
     current_interest: Event,
 
+    // ---- Buffers ----
     read_buf: BytesMut,
-
     write_buf: BytesMut,
-
-    write_queue: VecDeque<Packet>,
+    packets_queue: VecDeque<Packet>,
 }
 
 struct Packet {
@@ -35,15 +33,19 @@ struct Packet {
 
 impl UdpSocketHandler {
     pub fn new(udp_socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
+        // Set socket to non-blocking.
         udp_socket.set_nonblocking(true)?;
+
+        // Set interest to readable.
         let current_interest = Event::readable(key);
         (unsafe { poller.add_with_mode(&udp_socket, current_interest, PollMode::Level) })?;
+
         Ok(Self {
             socket: udp_socket,
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
-            write_queue: VecDeque::new(),
+            packets_queue: VecDeque::new(),
         })
     }
 
@@ -53,9 +55,13 @@ impl UdpSocketHandler {
         data: &[u8],
         channel: u8,
         peer_addr: SocketAddr,
+        peer_seq: u64,
     ) -> Result<()> {
         // Append header.
-        let header = Header::Classic { channel, seq: 0 };
+        let header = Header::Classic {
+            channel,
+            seq: peer_seq,
+        };
         header.put_into(&mut self.write_buf);
 
         // Append data.
@@ -63,7 +69,7 @@ impl UdpSocketHandler {
 
         // Extract payload and queue it.
         let payload = self.write_buf.split().freeze();
-        self.write_queue.push_front(Packet { payload, peer_addr });
+        self.packets_queue.push_front(Packet { payload, peer_addr });
 
         // Update socket interest
         if !self.current_interest.writable {
@@ -138,14 +144,14 @@ impl UdpSocketHandler {
 
     /// Try draining write queue until it would block.
     fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(packet) = self.write_queue.pop_back() {
+        while let Some(packet) = self.packets_queue.pop_back() {
             match self.socket.send_to(&packet.payload, packet.peer_addr) {
                 // Complete write.
                 Ok(_) => (),
 
                 // Socket full.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.write_queue.push_back(packet);
+                    self.packets_queue.push_back(packet);
                     return Ok(());
                 }
 

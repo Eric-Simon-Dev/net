@@ -11,29 +11,31 @@ type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
 pub struct UdpSocketHandler {
+    // ---- Socket ----
     socket: UdpSocket,
-
-    /// Current poller interest.
     current_interest: Event,
 
+    // ---- Buffers ----
     read_buf: BytesMut,
-
     write_buf: BytesMut,
-
-    write_queue: VecDeque<Bytes>,
+    payloads_queue: VecDeque<Bytes>,
 }
 
 impl UdpSocketHandler {
     pub fn new(udp_socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
+        // Set socket to non-blocking.
         udp_socket.set_nonblocking(true)?;
+
+        // Set interest to readable.
         let current_interest = Event::readable(key);
         (unsafe { poller.add_with_mode(&udp_socket, current_interest, PollMode::Level) })?;
+
         Ok(Self {
             socket: udp_socket,
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
-            write_queue: VecDeque::new(),
+            payloads_queue: VecDeque::new(),
         })
     }
 
@@ -47,7 +49,7 @@ impl UdpSocketHandler {
 
         // Extract payload and queue it.
         let payload = self.write_buf.split().freeze();
-        self.write_queue.push_front(payload);
+        self.payloads_queue.push_front(payload);
 
         // Update socket interest
         if !self.current_interest.writable {
@@ -106,14 +108,14 @@ impl UdpSocketHandler {
 
     /// Try draining write queue until it would block.
     fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(payload) = self.write_queue.pop_back() {
+        while let Some(payload) = self.payloads_queue.pop_back() {
             match self.socket.send(&payload) {
                 // Complete write.
                 Ok(_) => (),
 
                 // Socket full.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.write_queue.push_back(payload);
+                    self.payloads_queue.push_back(payload);
                     return Ok(());
                 }
 
