@@ -27,15 +27,25 @@ const TCP_LISTENER_KEY: usize = usize::MAX - 1;
 const UDP_SOCKET_KEY: usize = usize::MAX - 2;
 
 pub struct Handler {
+    // ---- Clients ----
+    clients: Slab<Client>,
+    addr_to_key: HashMap<SocketAddr, usize>,
+
     // ---- Handlers ----
     tcp: TcpListenerHandler,
     udp: UdpSocketHandler,
-    streams: Slab<TcpStreamHandler>,
-    addr_to_stream_key: HashMap<SocketAddr, usize>,
 
     // ---- Communication ----
     incoming: Sender<IncomingMessage>,
     outgoing: Receiver<OutgoingMessage>,
+}
+
+struct Client {
+    // ---- Data ----
+    addr: SocketAddr,
+
+    // ---- Handler ----
+    tcp: TcpStreamHandler,
 }
 
 impl Handler {
@@ -47,10 +57,10 @@ impl Handler {
         outgoing: Receiver<OutgoingMessage>,
     ) -> io::Result<Self> {
         Ok(Handler {
+            clients: Slab::new(),
+            addr_to_key: HashMap::new(),
             tcp: TcpListenerHandler::new(tcp_listener, poller, TCP_LISTENER_KEY)?,
             udp: UdpSocketHandler::new(udp_socket, poller, UDP_SOCKET_KEY)?,
-            streams: Slab::new(),
-            addr_to_stream_key: HashMap::new(),
             incoming,
             outgoing,
         })
@@ -60,15 +70,15 @@ impl Handler {
         match event.key {
             TCP_LISTENER_KEY => {
                 self.tcp
-                    .handle_event(poller, &mut self.streams, &mut self.addr_to_stream_key)?
+                    .handle_event(poller, &mut self.clients, &mut self.addr_to_key)?
             }
             UDP_SOCKET_KEY => self.udp.handle_event(
                 poller,
                 event,
                 &mut self.incoming,
-                &self.addr_to_stream_key,
+                &self.addr_to_key,
             )?,
-            key => self.streams[key].handle_event(poller, event, &mut self.incoming)?,
+            key => self.clients[key].tcp.handle_event(poller, event, &mut self.incoming)?,
         }
         Ok(())
     }
@@ -88,9 +98,9 @@ impl Handler {
             Guarantees::None => {
                 // Get peer address of drop message.
                 let Some(peer_addr) = self
-                    .streams
+                    .clients
                     .get(message.client_key)
-                    .map(|stream| stream.peer_addr())
+                    .map(|client| client.addr)
                 else {
                     return Ok(());
                 };
@@ -99,12 +109,12 @@ impl Handler {
                     .queue_message(poller, &message.data, message.channel, peer_addr)?;
             }
             Guarantees::Delivery | Guarantees::DeliveryOrder => {
-                // Get stream or drop message.
-                let Some(stream) = self.streams.get_mut(message.client_key) else {
+                // Get client or drop message.
+                let Some(client) = self.clients.get_mut(message.client_key) else {
                     return Ok(());
                 };
 
-                stream.queue_message(poller, &message.data, message.channel)?;
+                client.tcp.queue_message(poller, &message.data, message.channel)?;
             }
         }
 

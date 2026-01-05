@@ -7,7 +7,7 @@ use std::{
 use polling::{Event, PollMode, Poller};
 use slab::Slab;
 
-use super::TcpStreamHandler;
+use super::{TcpStreamHandler, Client};
 
 pub struct TcpListenerHandler {
     socket: TcpListener,
@@ -33,25 +33,26 @@ impl TcpListenerHandler {
     pub fn handle_event(
         &mut self,
         poller: &Poller,
-        streams: &mut Slab<TcpStreamHandler>,
-        addr_to_stream_key: &mut HashMap<SocketAddr, usize>,
+        clients: &mut Slab<Client>,
+        addr_to_key: &mut HashMap<SocketAddr, usize>,
     ) -> io::Result<()> {
-        self.drain_socket(poller, streams, addr_to_stream_key)
+        self.drain_socket(poller, clients, addr_to_key)
     }
 
     fn drain_socket(
         &mut self,
         poller: &Poller,
-        streams: &mut Slab<TcpStreamHandler>,
+        clients: &mut Slab<Client>,
         addr_to_stream_key: &mut HashMap<SocketAddr, usize>,
     ) -> io::Result<()> {
         loop {
             match self.socket.accept() {
-                Ok((tcp_stream, peer_addr)) => {
-                    let entry = streams.vacant_entry();
-                    let stream = TcpStreamHandler::new(tcp_stream, poller, entry.key(), peer_addr)?;
-                    addr_to_stream_key.insert(peer_addr, entry.key());
-                    entry.insert(stream);
+                Ok((tcp_stream, addr)) => {
+                    let entry = clients.vacant_entry();
+                    let tcp = TcpStreamHandler::new(tcp_stream, poller, entry.key())?;
+                    let client = Client { addr, tcp };
+                    addr_to_stream_key.insert(addr, entry.key());
+                    entry.insert(client);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) => return Err(e),

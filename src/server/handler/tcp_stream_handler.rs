@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::TcpStream,
     sync::mpsc::{SendError, Sender},
 };
 
@@ -17,7 +17,6 @@ type Result<T> = std::result::Result<T, TcpStreamHandlerError>;
 pub struct TcpStreamHandler {
     socket: TcpStream,
     key: usize,
-    peer_addr: SocketAddr,
 
     /// Current poller interest.
     current_interest: Event,
@@ -31,15 +30,10 @@ pub struct TcpStreamHandler {
 }
 
 impl TcpStreamHandler {
-    pub fn peer_addr(&self) -> SocketAddr {
-        self.peer_addr
-    }
-
     pub fn new(
         tcp_stream: TcpStream,
         poller: &Poller,
         key: usize,
-        peer_addr: SocketAddr,
     ) -> io::Result<Self> {
         tcp_stream.set_nonblocking(true)?;
         let current_interest = Event::readable(key);
@@ -47,7 +41,6 @@ impl TcpStreamHandler {
         Ok(Self {
             socket: tcp_stream,
             key,
-            peer_addr,
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
