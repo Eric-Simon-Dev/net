@@ -1,82 +1,52 @@
+//! Transport Abstraction Crate
+//! 
+//! This crate provides abstractions over network protocols, exposing only the guarantees 
+//! of each protocol while hiding the underlying implementation details.
+//! 
+//! Currently, it supports TCP and UDP.
+//! Support for RUDP (Reliable UDP) policies will be added later.
+//! 
+//! Only connections with matching IP versions are supported (IPv4 ↔ IPv4, IPv6 ↔ IPv6).
+//! Cross-version support will be added in a future release.
+//! 
+//! This crate operates at the OSI transport layer, allowing users to build clients and servers 
+//! without dealing directly with TCP/UDP differences.
+
 mod doc {
-    //! # TCP / UDP / RUDP
-    //!
-    //! Both TCP and UDP are standard protocols built on top of IP.
+    //! # Notes on Protocols
+    //! 
+    //! ## TCP / UDP / RUDP
     //!
     //! TCP guarantees:
-    //! - **Integrity**: No corrupted payload (resend if needed).  
-    //! - **Non-duplication**: Single message sent ⇒ single message received (using sequence numbers).  
-    //! - **Delivery**: Notifies sender when delivery occurs (via acknowledgments).  
-    //! - **Order**: Messages arrive in the order they were sent (using sequence numbers).  
+    //! - **Integrity**: Payload is not corrupted.
+    //! - **Non-duplication**: Each message is received exactly once.
+    //! - **Delivery**: Sender is notified of delivery.
+    //! - **Order**: Messages arrive in the order sent.
+    //!
+    //! TCP does *not* guarantee:
+    //! - **Boundaries**: Messages are merged into a continuous stream.
     //!
     //! UDP guarantees:
-    //! - **Integrity**: Ensures payload is not corrupted.  
-    //! - **Boundaries**: Packets are not split or merged (unlike TCP).  
+    //! - **Integrity**: Payload is not corrupted.
+    //! - **Boundaries**: Messages are not merged or split.
     //!
-    //! In scenarios like gaming, we may want more flexibility. For example:  
-    //! - Non-duplication or delivery without order guarantee.
-    //! - Acknowledgments with custom resend rules (e.g., prioritizing certain packets).
+    //! UDP does *not* guarantee:
+    //! - **Non-duplication**: Messages may be duplicated.
+    //! - **Delivery**: No acknowledgment; fire and forget.
+    //! - **Order**: Messages may arrive out of order.
     //!
-    //! RUDP is a protocol implemented on top of UDP.
-    //! Most RUDP protocols implement some degree of reliability,
-    //! though the term can broadly refer to any protocol built on UDP.  
+    //! RUDP (Reliable UDP) aims to provide more guarantees than UDP while maintaining 
+    //! lower latency than TCP, e.g., for gaming.
     //!
-    //! # IPv4 & IPv6
+    //! ## IPv4 & IPv6
     //!
-    //! Ideally, we want to support both IPv4 and IPv6 to reach the maximum player base.
+    //! - **Dual-stack socket**: Handles both IP versions, but not always available.
+    //! - **Separate sockets per version**: Most common approach.
     //!
-    //! Options:
-    //! - **Dual-stack socket**: Can handle both versions, but not always available.  
-    //! - **Separate sockets per version**: The most common approach.  
+    //! ## Session vs Transport
     //!
-    //! Currently, we use a single socket,
-    //! so the server/client IP versions must match (both v4 or both v6).  
-    //!
-    //! # Session & Transport
-    //!
-    //! These represent different layers with different responsibilities:
-    //! - **Transport**: Guarantees (e.g., RUDP, ENet, etc.).  
+    //! - **Transport**: Guarantees (e.g., RUDP, ENet).  
     //! - **Session**: Continuity (authentication, reconnection, etc.).  
-    //!
-    //! I'm unsure about the definitions;
-    //! this crate may later be split into separate "transport" and "session" modules.  
-    //!
-    //! # Channels
-    //!
-    //! Network <--receiver/sender--> Packet <--handler--> Message (App)
-    //!
-    //! Naming conventions:
-    //! - **Message** := Payload + application metadata.  
-    //! - **Packet** := Payload + protocol metadata (unseen by the user).  
-    //! - **Incoming** := From network to app.  
-    //! - **Outgoing** := From app to network.  
-    //!
-    //! # Threads
-    //!
-    //! Threads loop continuously on blocking functions. Blocking allows context switching.
-    //!
-    //! In case of error:
-    //! - A thread fails and shuts down.  
-    //! - Chain reaction of channel disconnections leads to other thread shutdowns.  
-    //! - Finally, the user receives `Err(Disconnected)`.  
-    //!
-    //! # Buffering strategy
-    //!
-    //! 1. Reserve RING capacity (multiple contiguous buffers), e.g., 4Mb total (each buffer 1Mb).  
-    //! 2. "Eat" (give ownership away) a buffer from the front when buffering packets.  
-    //! 3. Once we reach the end of the ring:  
-    //!    - Reallocate BUFFER capacity.  
-    //!        - Should reallocate at the beginning of the ring (`bytes` crate optimization).  
-    //!        - Avoid OS reallocation.  
-    //!
-    //! Only the BUFFER (1Mb) is reallocated
-    //! because the middle/end of the ring may be in use by other threads.  
-    //! If the app holds onto packets for too long, this strategy may fail.
-    //! The next buffer region will not be free.
-    //! Allocations still must do a full "ring tour" before that though.
-    //!
-    //! This optimized behavior hasn’t been tested.
-    //! To test it, monitor whether buffer pointers always stay within the ring range.
 }
 
 pub mod client;
