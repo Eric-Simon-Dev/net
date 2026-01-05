@@ -8,7 +8,7 @@ use std::{
 use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 
-use crate::protocol::udp::MAX_SIZE;
+use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
 use super::IncomingMessage;
 
@@ -55,7 +55,8 @@ impl UdpSocketHandler {
         peer_addr: SocketAddr,
     ) -> Result<()> {
         // Append header.
-        self.write_buf.put_u8(channel);
+        let header = Header::Classic { channel, seq: 0 };
+        header.put_into(&mut self.write_buf);
 
         // Append data.
         self.write_buf.put(data);
@@ -95,7 +96,7 @@ impl UdpSocketHandler {
         &mut self,
         addr_to_stream_key: &HashMap<SocketAddr, usize>,
     ) -> Result<Option<IncomingMessage>> {
-        let mut buf = [0; MAX_SIZE];
+        let mut buf = [0; MAX_PACKET_SIZE];
         loop {
             // Receive packet.
             let peer_addr = match self.socket.recv_from(&mut buf) {
@@ -115,18 +116,23 @@ impl UdpSocketHandler {
             // Extract payload.
             let mut payload = self.read_buf.split();
 
-            // Parse payload into header (single byte) and data.
-            let header = payload.split_to(1);
+            // Split header or drop.
+            let header = match Header::split_from(&mut payload) {
+                Ok(header) => header,
+                Err(_) => continue,
+            };
             let data = payload;
 
-            // Parse header.
-            let channel = header[0];
-
-            return Ok(Some(IncomingMessage {
-                data,
-                channel,
-                client_key,
-            }));
+            // React to header
+            match header {
+                Header::Classic { channel, seq: _ } => {
+                    return Ok(Some(IncomingMessage {
+                        data,
+                        channel,
+                        client_key,
+                    }));
+                }
+            }
         }
     }
 

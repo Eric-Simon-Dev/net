@@ -1,3 +1,9 @@
 //! Protocols over UDP.
 
-pub const MAX_SIZE: usize = 1024;
+mod header;
+mod sliding_window;
+
+pub use header::{Header, HeaderDecodingError};
+pub use sliding_window::SlidingWindow;
+
+pub const MAX_PACKET_SIZE: usize = 1024;
