@@ -1,126 +1,76 @@
-mod protocol_thread;
-mod receiver_thread;
-mod sender_thread;
+mod handler;
+mod reactor;
 
 use std::{
     io,
-    net::{ToSocketAddrs, UdpSocket},
+    net::{SocketAddr, TcpStream, UdpSocket},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use bytes::BytesMut;
-use crossbeam::channel::{Receiver, Sender, bounded};
+use polling::{Events, Poller};
 
-use crate::protocol::{MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, PacketType};
+use handler::Handler;
 
-// ---- Buffering constants ----
+pub fn connect(
+    local_addr: SocketAddr,
+    server_addr: SocketAddr,
+) -> io::Result<(Sender<OutgoingMessage>, Receiver<IncomingMessage>, Waker)> {
+    // Create IO = sockets + poller.
+    let tcp_stream = TcpStream::connect(server_addr)?;
+    let udp_socket = UdpSocket::bind(local_addr)?;
+    udp_socket.connect(server_addr)?;
+    let poller = Arc::new(Poller::new()?);
+    let events = Events::new();
 
-const MAX_PACKETS_PER_CHANNEL: usize = 64;
-const BUFFER_SIZE: usize = MAX_PACKET_SIZE * MAX_PACKETS_PER_CHANNEL;
-const RING_SIZE: usize = BUFFER_SIZE * 256;
+    // Create communication = channels + waker.
+    let incoming = mpsc::channel();
+    let outgoing = mpsc::channel();
+    let waker = Waker(poller.clone());
 
-// ==================================================================
-// Client
-// ==================================================================
+    // Create handler.
+    let handler = Handler::new(tcp_stream, udp_socket, &poller, incoming.0, outgoing.1)?;
 
-pub struct Client {
-    socket: UdpSocket,
+    // Spawn reactor.
+    reactor::spawn(poller, events, handler);
+
+    Ok((outgoing.0, incoming.1, waker))
 }
 
-// ---- Constructor ----
-
-impl Client {
-    /// Creates a new client bound to the given `addr`.
-    ///
-    /// # Errors
-    /// `UdpSocket` cannot be bound to the address.
-    pub fn new(addr: impl ToSocketAddrs) -> io::Result<Client> {
-        Ok(Self {
-            socket: UdpSocket::bind(addr)?,
-        })
-    }
-}
-
-// ---- Methods ----
-
-impl Client {
-    /// Connect client to `server_addr` and start pumping network data asynchronously.
-    ///
-    /// # Guarantees
-    ///
-    /// If a returned endpoint receives `Err(Disconnected)`,
-    /// all network threads have stopped.
-    ///
-    /// It is safe to call this method again to relaunch the network.
-    ///
-    /// # Errors
-    /// - Fail to connect to server address.
-    /// - Fail to clone client's UDP socket.
-    pub fn connect(
-        &mut self,
-        server_addr: impl ToSocketAddrs,
-    ) -> io::Result<(Sender<Message>, Receiver<Message>)> {
-        // ---- Connection ----
-
-        // Connect socket to given server address.
-
-        self.socket.connect(server_addr)?;
-
-        // ---- Channels ----
-
-        // Create channels to pass network data between threads.
-
-        let incoming_packets = bounded(MAX_PACKETS_PER_CHANNEL);
-        let outgoing_packets = bounded(MAX_PACKETS_PER_CHANNEL);
-        let incoming_messages = bounded(MAX_PACKETS_PER_CHANNEL);
-        let outgoing_messages = bounded(MAX_PACKETS_PER_CHANNEL);
-
-        // ---- Threads ----
-
-        // Spawn threads to pump network data asynchronuously.
-
-        receiver_thread::spawn(self.socket.try_clone()?, incoming_packets.0);
-        sender_thread::spawn(self.socket.try_clone()?, outgoing_packets.1);
-        protocol_thread::spawn(
-            incoming_packets.1,
-            outgoing_messages.1,
-            outgoing_packets.0,
-            incoming_messages.0,
-        );
-
-        // ----
-
-        Ok((outgoing_messages.0, incoming_messages.1))
-    }
-}
-
-// ==================================================================
-// Network data
-// ==================================================================
-
-// ---- Message (public) ----
+// ---- Messages ----
 
 #[derive(Debug, Clone)]
-pub struct Message {
+pub struct IncomingMessage {
+    pub data: BytesMut,
+    pub channel: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct OutgoingMessage {
     pub data: BytesMut,
     pub channel: u8,
     pub guarantees: Guarantees,
 }
 
-impl Message {
-    /// Maximum size (in bytes) for `data`.
-    pub const MAX_DATA_SIZE: usize = MAX_PAYLOAD_SIZE;
-}
+// ---- Guarantees ----
 
-/// Reliability guarantees for a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Guarantees {
     None,
+    Delivery,
+    DeliveryOrder,
 }
 
-// ---- Packet (private) ----
+// ---- Waker ----
 
-#[derive(Debug)]
-struct Packet {
-    data: BytesMut,
+pub struct Waker(Arc<Poller>);
+
+impl Waker {
+    pub fn wake(&self) -> io::Result<()> {
+        self.0.notify()
+    }
 }

@@ -1,18 +1,21 @@
-use std::{thread, time::Duration};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    thread,
+    time::Duration,
+};
 
 use bytes::BytesMut;
 
 use crate::{client, server};
 
-/// Ensure that :
-/// - A server can successfully bind and listen.
-/// - A client can succesfully bind and connect to a server.
 #[test]
 fn connection() {
-    let mut server = server::Server::new("0:12012").unwrap();
-    let (_, _) = server.listen().unwrap();
-    let mut client = client::Client::new("0:12013").unwrap();
-    let (_, _) = client.connect("0:12012").unwrap();
+    // ---- Addresses ----
+    let server_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12012).into();
+    let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12013).into();
+
+    let (_, _, _) = server::listen(server_addr).unwrap();
+    let (_, _, _) = client::connect(client_addr, server_addr).unwrap();
 }
 
 /// Perform multiple message exchanges between a client and a server.
@@ -20,32 +23,68 @@ fn connection() {
 /// The client and server run on separate threads and bounce a single-byte
 /// message back and forth, incrementing it each time.
 #[test]
-fn multiple_exchanges() {
+fn multiple_exchanges_no_guarantees() {
+    // ---- Addresses ----
+    let server_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12014).into();
+    let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12015).into();
+
     // Spawn server first.
-    thread::spawn(|| {
-        run_server();
+    thread::spawn(move || {
+        run_server(server_addr, server::Guarantees::None);
     });
 
     // Give the server time to start listening,
     // so the client connection succeeds.
     thread::sleep(Duration::from_millis(100));
 
-    thread::spawn(|| {
-        run_client();
+    // Spawn client.
+    thread::spawn(move || {
+        run_client(client_addr, server_addr, client::Guarantees::None);
     });
 }
 
-fn run_server() {
-    use crate::server::Server;
+/// Perform multiple message exchanges between a client and a server.
+///
+/// The client and server run on separate threads and bounce a single-byte
+/// message back and forth, incrementing it each time.
+#[test]
+fn multiple_exchanges_delivery_guarantee() {
+    // ---- Addresses ----
+    let server_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12016).into();
+    let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12017).into();
 
-    let mut server = Server::new("0:12014").unwrap();
-    let (sender, receiver) = server.listen().unwrap();
+    // Spawn server first.
+    thread::spawn(move || {
+        run_server(server_addr, server::Guarantees::Delivery);
+    });
+
+    // Give the server time to start listening,
+    // so the client connection succeeds.
+    thread::sleep(Duration::from_millis(100));
+
+    // Spawn client.
+    thread::spawn(move || {
+        run_client(client_addr, server_addr, client::Guarantees::Delivery);
+    });
+}
+
+fn run_server(server_addr: SocketAddr, guarantees: server::Guarantees) {
+    use server::{OutgoingMessage, listen};
+
+    let (sender, receiver, waker) = listen(server_addr).unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
         let mut msg = receiver.recv().unwrap();
         msg.data[0] += 1;
+        let msg = OutgoingMessage {
+            data: msg.data,
+            channel: msg.channel,
+            client_key: msg.client_key,
+            guarantees,
+        };
         sender.send(msg).unwrap();
+        waker.wake().unwrap();
     }
 
     // Final receive: ensure the expected value is reached.
@@ -53,24 +92,30 @@ fn run_server() {
     assert_eq!(msg.data[0], 32);
 }
 
-fn run_client() {
-    use crate::client::{Client, Guarantees, Message};
+fn run_client(client_addr: SocketAddr, server_addr: SocketAddr, guarantees: client::Guarantees) {
+    use client::{OutgoingMessage, connect};
 
-    let mut client = Client::new("0:12015").unwrap();
-    let (sender, receiver) = client.connect("0:12014").unwrap();
+    let (sender, receiver, waker) = connect(client_addr, server_addr).unwrap();
 
     // Initial message with value 0.
-    let msg = Message {
+    let msg = OutgoingMessage {
         data: BytesMut::zeroed(1),
         channel: 0,
-        guarantees: Guarantees::None,
+        guarantees,
     };
     sender.send(msg).unwrap();
+    waker.wake().unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
         let mut msg = receiver.recv().unwrap();
         msg.data[0] += 1;
+        let msg = OutgoingMessage {
+            data: msg.data,
+            channel: msg.channel,
+            guarantees,
+        };
         sender.send(msg).unwrap();
+        waker.wake().unwrap();
     }
 }
