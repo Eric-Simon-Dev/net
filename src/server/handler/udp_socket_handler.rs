@@ -31,7 +31,7 @@ impl UdpSocketHandler {
         // Set socket to non-blocking.
         udp_socket.set_nonblocking(true)?;
 
-        // Set interest to readable.
+        // Set readable interest.
         let current_interest = Event::readable(key);
         (unsafe { poller.add_with_mode(&udp_socket, current_interest, PollMode::Level) })?;
 
@@ -66,7 +66,7 @@ impl UdpSocketHandler {
         let payload = self.write_buf.split().freeze();
         self.payloads_queue.push_front((payload, peer_addr));
 
-        // Update interest with writable.
+        // Set writable interest.
         if !self.current_interest.writable {
             self.current_interest.writable = true;
             poller.modify(&self.socket, self.current_interest)?;
@@ -154,10 +154,9 @@ impl UdpSocketHandler {
                 Err(e) => return Err(e),
             }
         }
-
         // Exiting loop => All queued writes have been sent.
 
-        // Update poller interest.
+        // Remove writable interest.
         self.current_interest.writable = false;
         poller.modify(&self.socket, self.current_interest)?;
 

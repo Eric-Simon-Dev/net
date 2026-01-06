@@ -18,7 +18,7 @@ impl TcpListenerHandler {
         // Set socket to non-blocking.
         tcp_listener.set_nonblocking(true)?;
 
-        // Set interest to readable.
+        // Set readable interest.
         let current_interest = Event::readable(key);
         (unsafe { poller.add_with_mode(&tcp_listener, current_interest, PollMode::Level) })?;
 

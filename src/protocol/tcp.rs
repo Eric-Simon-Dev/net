@@ -2,4 +2,6 @@
 
 mod header;
 
-pub use header::{Header, HeaderDecodingError};
+pub use header::{
+    CreateError as HeaderCreateError, DecodeError as HeaderDecodeError, Header, MAX_PAYLOAD_LENGTH,
+};

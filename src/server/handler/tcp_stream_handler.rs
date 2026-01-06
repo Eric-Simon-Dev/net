@@ -1,19 +1,17 @@
 use std::{
     collections::VecDeque,
+    fmt,
     io::{self, Read, Write},
     net::TcpStream,
-    sync::mpsc::Sender,
+    sync::mpsc::{SendError, Sender},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 
-use crate::protocol::tcp::{Header, HeaderDecodingError};
+use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
 
 use super::IncomingMessage;
-
-type Error = Box<dyn std::error::Error>;
-type Result<T> = std::result::Result<T, Error>;
 
 pub struct TcpStreamHandler {
     // ---- Socket ----
@@ -23,7 +21,7 @@ pub struct TcpStreamHandler {
     // ---- Buffers ----
     read_buf: BytesMut,
     write_buf: BytesMut,
-    payloads_queue: VecDeque<Bytes>,
+    frames_queue: VecDeque<Bytes>,
 }
 
 impl TcpStreamHandler {
@@ -31,7 +29,7 @@ impl TcpStreamHandler {
         // Set socket to non-blocking.
         tcp_stream.set_nonblocking(true)?;
 
-        // Set interest to readable.
+        // Set readable interest.
         let current_interest = Event::readable(key);
         (unsafe { poller.add_with_mode(&tcp_stream, current_interest, PollMode::Level) })?;
 
@@ -40,26 +38,26 @@ impl TcpStreamHandler {
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
-            payloads_queue: VecDeque::new(),
+            frames_queue: VecDeque::new(),
         })
     }
 
-    pub fn queue_message(&mut self, poller: &Poller, data: &[u8], channel: u8) -> Result<()> {
-        // Append header.
-        let header = Header {
-            length: data.len() as u32,
-            channel,
-        };
+    pub fn queue_message(
+        &mut self,
+        poller: &Poller,
+        payload: &[u8],
+        channel: u8,
+    ) -> Result<(), QueueMessageError> {
+        // Create header.
+        let header = Header::new(payload.len(), channel)?;
+
+        // Buffer and queue frame.
         header.put_into(&mut self.write_buf);
+        self.write_buf.put(payload);
+        let frame = self.write_buf.split().freeze();
+        self.frames_queue.push_front(frame);
 
-        // Append data.
-        self.write_buf.put(data);
-
-        // Extract payload and queue it.
-        let payload = self.write_buf.split().freeze();
-        self.payloads_queue.push_front(payload);
-
-        // Update interest with writable.
+        // Set writable interest.
         if !self.current_interest.writable {
             self.current_interest.writable = true;
             poller.modify(&self.socket, self.current_interest)?;
@@ -73,11 +71,15 @@ impl TcpStreamHandler {
         poller: &Poller,
         event: Event,
         incoming: &mut Sender<IncomingMessage>,
-    ) -> Result<()> {
+    ) -> Result<(), HandleEventError> {
         if event.readable {
             self.drain_socket()?;
-            while let Some(message) = self.next_message(event.key)? {
-                incoming.send(message)?;
+            while let Some((header, payload)) = self.parse_next_frame()? {
+                incoming.send(IncomingMessage {
+                    data: payload,
+                    channel: header.channel,
+                    client_key: event.key,
+                })?;
             }
         }
         if event.writable {
@@ -87,57 +89,43 @@ impl TcpStreamHandler {
     }
 
     /// Drain socket into read buffer.
-    fn drain_socket(&mut self) -> Result<()> {
+    fn drain_socket(&mut self) -> Result<(), HandleEventError> {
         let mut buf = [0; 4096];
         loop {
             match self.socket.read(&mut buf) {
-                // Client shutdown.
-                Ok(0) => return Err("close".into()),
-
-                // Read.
+                Ok(0) => return Err(HandleEventError::ConnectionClosed),
                 Ok(n) => self.read_buf.put(&buf[..n]),
-
-                // Socket empty.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-
-                // Fatal error.
                 Err(e) => return Err(e.into()),
             }
         }
     }
 
-    /// Parse read buffer for next message.
-    fn next_message(&mut self, key: usize) -> Result<Option<IncomingMessage>> {
-        // Split frame or return Ok(none).
-        let (header, payload) = match Header::split_frame_from(&mut self.read_buf) {
-            Ok((header, data)) => (header, data),
-            Err(HeaderDecodingError::BufferTooSmall) => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-
-        Ok(Some(IncomingMessage {
-            data: payload,
-            channel: header.channel,
-            client_key: key,
-        }))
+    /// Try Parsing next frame from read buffer.
+    fn parse_next_frame(&mut self) -> Result<Option<(Header, BytesMut)>, HandleEventError> {
+        match Header::split_frame_from(&mut self.read_buf) {
+            Ok(frame) => Ok(Some(frame)),
+            Err(HeaderDecodeError::BufferTooSmall) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
-    /// Try draining write queue until it would block.
+    /// Try draining frames queue until socket would block.
     fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(mut payload) = self.payloads_queue.pop_back() {
-            match self.socket.write(&payload) {
-                // Partial write : Remove written bytes and push back into queue.
-                Ok(n) if n < payload.len() => {
-                    let _ = payload.split_to(n);
-                    self.payloads_queue.push_back(payload);
+        while let Some(mut frame) = self.frames_queue.pop_back() {
+            match self.socket.write(&frame) {
+                // Partial write: Remove written bytes and push back into queue.
+                Ok(n) if n < frame.len() => {
+                    let _ = frame.split_to(n);
+                    self.frames_queue.push_back(frame);
                 }
 
                 // Complete write.
                 Ok(_) => (),
 
-                // Socket full.
+                // Socket full: Push back into queue and return without error.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.payloads_queue.push_back(payload);
+                    self.frames_queue.push_back(frame);
                     return Ok(());
                 }
 
@@ -145,13 +133,99 @@ impl TcpStreamHandler {
                 Err(e) => return Err(e),
             }
         }
+        // Exiting loop => All queued frames have been sent.
 
-        // Exiting loop => All queued writes have been sent.
-
-        // Update poller interest.
+        // Remove writable interest.
         self.current_interest.writable = false;
         poller.modify(&self.socket, self.current_interest)?;
 
         Ok(())
+    }
+}
+
+// ---- Errors ----
+
+#[derive(Debug)]
+pub enum QueueMessageError {
+    InvalidHeader(HeaderCreateError),
+    Io(std::io::Error),
+}
+
+impl From<HeaderCreateError> for QueueMessageError {
+    fn from(e: HeaderCreateError) -> Self {
+        QueueMessageError::InvalidHeader(e)
+    }
+}
+
+impl From<std::io::Error> for QueueMessageError {
+    fn from(e: std::io::Error) -> Self {
+        QueueMessageError::Io(e)
+    }
+}
+
+impl fmt::Display for QueueMessageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QueueMessageError::InvalidHeader(e) => write!(f, "failed to create header: {}", e),
+            QueueMessageError::Io(e) => write!(f, "I/O error while queueing message: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for QueueMessageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            QueueMessageError::InvalidHeader(e) => Some(e),
+            QueueMessageError::Io(e) => Some(e),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum HandleEventError {
+    ConnectionClosed,
+    InvalidHeader(HeaderDecodeError),
+    ChannelDisconnected,
+    Io(std::io::Error),
+}
+
+impl From<std::io::Error> for HandleEventError {
+    fn from(e: std::io::Error) -> Self {
+        HandleEventError::Io(e)
+    }
+}
+
+impl From<HeaderDecodeError> for HandleEventError {
+    fn from(e: HeaderDecodeError) -> Self {
+        HandleEventError::InvalidHeader(e)
+    }
+}
+
+impl<T> From<SendError<T>> for HandleEventError {
+    fn from(_e: SendError<T>) -> Self {
+        HandleEventError::ChannelDisconnected
+    }
+}
+
+impl fmt::Display for HandleEventError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HandleEventError::ConnectionClosed => write!(f, "connection closed by remote peer"),
+            HandleEventError::InvalidHeader(e) => write!(f, "invalid protocol header: {}", e),
+            HandleEventError::ChannelDisconnected => {
+                write!(f, "incoming message channel disconnected")
+            }
+            HandleEventError::Io(e) => write!(f, "I/O error while handling socket event: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for HandleEventError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HandleEventError::InvalidHeader(e) => Some(e),
+            HandleEventError::Io(e) => Some(e),
+            _ => None,
+        }
     }
 }
