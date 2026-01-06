@@ -5,8 +5,6 @@ use std::{
 
 use polling::{Event, PollMode, Poller};
 
-use super::ClientRegistry;
-
 pub struct TcpListenerHandler {
     socket: TcpListener,
 }
@@ -25,15 +23,8 @@ impl TcpListenerHandler {
         })
     }
 
-    pub fn handle_event(
-        &mut self,
-        poller: &Poller,
-        clients: &mut ClientRegistry,
-    ) -> io::Result<()> {
-        while let Some((tcp_stream, addr)) = self.next_connection()? {
-            clients.add_client(poller, tcp_stream, addr)?;
-        }
-        Ok(())
+    pub fn handle_event(&mut self) -> io::Result<Option<(TcpStream, SocketAddr)>> {
+        self.next_connection()
     }
 
     fn next_connection(&mut self) -> io::Result<Option<(TcpStream, SocketAddr)>> {

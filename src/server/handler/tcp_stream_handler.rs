@@ -17,7 +17,7 @@ use super::IncomingMessage;
 
 pub struct TcpStreamHandler {
     // ---- Socket ----
-    socket: TcpStream,
+    pub socket: TcpStream,
     current_interest: Event,
 
     // ---- Buffers ----

@@ -1,9 +1,11 @@
 //! Datagram = header + payload.
 
+mod client;
+
 use std::{
     collections::VecDeque,
     fmt, io,
-    net::{SocketAddr, UdpSocket},
+    net::UdpSocket,
     sync::mpsc::{SendError, Sender},
 };
 
@@ -12,9 +14,14 @@ use polling::{Event, PollMode, Poller};
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
-use super::{ClientRegistry, IncomingMessage};
+use super::IncomingMessage;
+
+use client::ClientRegistry;
 
 pub struct UdpSocketHandler {
+    // ---- Clients ----
+    pub clients: ClientRegistry,
+
     // ---- Socket ----
     socket: UdpSocket,
     current_interest: Event,
@@ -27,7 +34,7 @@ pub struct UdpSocketHandler {
 
 struct AddressedDatagram {
     datagram: Bytes,
-    peer_addr: SocketAddr,
+    key: usize,
 }
 
 impl UdpSocketHandler {
@@ -40,6 +47,7 @@ impl UdpSocketHandler {
         (unsafe { poller.add_with_mode(&udp_socket, current_interest, PollMode::Level) })?;
 
         Ok(Self {
+            clients: ClientRegistry::new(),
             socket: udp_socket,
             current_interest,
             read_buf: BytesMut::new(),
@@ -53,15 +61,19 @@ impl UdpSocketHandler {
         poller: &Poller,
         payload: &[u8],
         channel: u8,
-        peer_addr: SocketAddr,
-        peer_seq: &mut u64,
+        client_key: usize,
     ) -> io::Result<()> {
+        // Get client or drop.
+        let Some(client) = self.clients.get_mut_by_key(client_key) else {
+            return Ok(());
+        };
+
         // Create header.
         let header = Header::Classic {
             channel,
-            seq: *peer_seq,
+            seq: client.send_seq,
         };
-        *peer_seq += 1;
+        client.send_seq += 1;
 
         // Buffer and queue datagram.
         header.put_into(&mut self.write_buf);
@@ -69,7 +81,7 @@ impl UdpSocketHandler {
         let datagram = self.write_buf.split().freeze();
         self.datagrams_queue.push_front(AddressedDatagram {
             datagram,
-            peer_addr,
+            key: client_key,
         });
 
         // Set writable interest.
@@ -86,10 +98,9 @@ impl UdpSocketHandler {
         poller: &Poller,
         event: Event,
         incoming: &mut Sender<IncomingMessage>,
-        clients: &mut ClientRegistry,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            while let Some((header, payload)) = self.next_parsed_datagram(clients)? {
+            while let Some((header, payload)) = self.next_parsed_datagram()? {
                 incoming.send(IncomingMessage {
                     data: payload,
                     channel: header.channel(),
@@ -103,10 +114,7 @@ impl UdpSocketHandler {
         Ok(())
     }
 
-    fn next_parsed_datagram(
-        &mut self,
-        clients: &mut ClientRegistry,
-    ) -> io::Result<Option<(Header, BytesMut)>> {
+    fn next_parsed_datagram(&mut self) -> io::Result<Option<(Header, BytesMut)>> {
         let mut buf = [0; MAX_PACKET_SIZE];
         loop {
             // Receive packet.
@@ -117,7 +125,7 @@ impl UdpSocketHandler {
             };
 
             // Drop packet if client is unknown.
-            let Some(client) = clients.get_mut_by_addr(peer_addr) else {
+            let Some(client) = self.clients.get_mut_by_addr(peer_addr) else {
                 continue;
             };
 
@@ -143,21 +151,20 @@ impl UdpSocketHandler {
 
     /// Try draining datagram queue until socket would block.
     fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(AddressedDatagram {
-            datagram,
-            peer_addr,
-        }) = self.datagrams_queue.pop_back()
-        {
-            match self.socket.send_to(&datagram, peer_addr) {
+        while let Some(AddressedDatagram { datagram, key }) = self.datagrams_queue.pop_back() {
+            // Get client or drop.
+            let Some(client) = self.clients.get_mut_by_key(key) else {
+                continue;
+            };
+
+            match self.socket.send_to(&datagram, client.addr) {
                 // Complete write.
                 Ok(_) => (),
 
                 // Socket full: Push back into queue and return without error.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.datagrams_queue.push_back(AddressedDatagram {
-                        datagram,
-                        peer_addr,
-                    });
+                    self.datagrams_queue
+                        .push_back(AddressedDatagram { datagram, key });
                     return Ok(());
                 }
 

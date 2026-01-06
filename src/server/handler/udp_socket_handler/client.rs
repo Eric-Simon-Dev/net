@@ -1,30 +1,23 @@
 use std::{
     collections::HashMap,
     io,
-    net::{SocketAddr, TcpStream},
+    net::SocketAddr,
     ops::{Index, IndexMut},
 };
 
-use polling::Poller;
 use slab::Slab;
 
 use crate::protocol::udp::SlidingWindow;
 
-use super::TcpStreamHandler;
-
-pub struct Client {
-    // ---- Handler ----
-    pub tcp: TcpStreamHandler,
-
-    // ---- Data ----
-    pub addr: SocketAddr,
-    pub send_seq: u64,
-    pub recv_seq_window: SlidingWindow,
-}
-
 pub struct ClientRegistry {
     clients: Slab<Client>,
     addr_to_key: HashMap<SocketAddr, usize>,
+}
+
+pub struct Client {
+    pub addr: SocketAddr,
+    pub send_seq: u64,
+    pub recv_seq_window: SlidingWindow,
 }
 
 impl ClientRegistry {
@@ -35,17 +28,11 @@ impl ClientRegistry {
         }
     }
 
-    pub fn add_client(
-        &mut self,
-        poller: &Poller,
-        tcp_stream: TcpStream,
-        addr: SocketAddr,
-    ) -> io::Result<usize> {
+    pub fn add_client(&mut self, addr: SocketAddr) -> io::Result<usize> {
         let entry = self.clients.vacant_entry();
         let key = entry.key();
 
         let client = Client {
-            tcp: TcpStreamHandler::new(tcp_stream, poller, key)?,
             addr,
             send_seq: 0,
             recv_seq_window: SlidingWindow::new(),
