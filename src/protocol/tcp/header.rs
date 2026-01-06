@@ -98,7 +98,7 @@ impl Header {
 
 #[derive(Debug)]
 pub enum CreateError {
-    /// The payload length exceeds [`MAX_PAYLOAD_LENGTH`].
+    /// The payload length exceeds [`crate::MAX_TCP_PAYLOAD_LENGTH`].
     PayloadTooBig,
 }
 
@@ -118,7 +118,7 @@ impl std::error::Error for CreateError {}
 pub enum DecodeError {
     /// The buffer does not contain enough bytes to decode a full frame.
     BufferTooSmall,
-    /// The decoded payload length exceeds [`MAX_PAYLOAD_LENGTH`].
+    /// The decoded payload length exceeds [`crate::MAX_TCP_PAYLOAD_LENGTH`].
     PayloadTooBig,
 }
 

@@ -1,8 +1,10 @@
+//! Datagram = header + payload.
+
 use std::{
-    collections::{HashMap, VecDeque},
-    io,
+    collections::VecDeque,
+    fmt, io,
     net::{SocketAddr, UdpSocket},
-    sync::mpsc::Sender,
+    sync::mpsc::{SendError, Sender},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -10,10 +12,7 @@ use polling::{Event, PollMode, Poller};
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
-use super::IncomingMessage;
-
-type Error = Box<dyn std::error::Error>;
-type Result<T> = std::result::Result<T, Error>;
+use super::{ClientRegistry, IncomingMessage};
 
 pub struct UdpSocketHandler {
     // ---- Socket ----
@@ -23,7 +22,12 @@ pub struct UdpSocketHandler {
     // ---- Buffers ----
     read_buf: BytesMut,
     write_buf: BytesMut,
-    payloads_queue: VecDeque<(Bytes, SocketAddr)>,
+    datagrams_queue: VecDeque<AddressedDatagram>,
+}
+
+struct AddressedDatagram {
+    datagram: Bytes,
+    peer_addr: SocketAddr,
 }
 
 impl UdpSocketHandler {
@@ -40,31 +44,33 @@ impl UdpSocketHandler {
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
-            payloads_queue: VecDeque::new(),
+            datagrams_queue: VecDeque::new(),
         })
     }
 
     pub fn queue_message(
         &mut self,
         poller: &Poller,
-        data: &[u8],
+        payload: &[u8],
         channel: u8,
         peer_addr: SocketAddr,
-        peer_seq: u64,
-    ) -> Result<()> {
-        // Append header.
+        peer_seq: &mut u64,
+    ) -> io::Result<()> {
+        // Create header.
         let header = Header::Classic {
             channel,
-            seq: peer_seq,
+            seq: *peer_seq,
         };
+        *peer_seq += 1;
+
+        // Buffer and queue datagram.
         header.put_into(&mut self.write_buf);
-
-        // Append data.
-        self.write_buf.put(data);
-
-        // Extract payload and queue it.
-        let payload = self.write_buf.split().freeze();
-        self.payloads_queue.push_front((payload, peer_addr));
+        self.write_buf.put(payload);
+        let datagram = self.write_buf.split().freeze();
+        self.datagrams_queue.push_front(AddressedDatagram {
+            datagram,
+            peer_addr,
+        });
 
         // Set writable interest.
         if !self.current_interest.writable {
@@ -80,11 +86,15 @@ impl UdpSocketHandler {
         poller: &Poller,
         event: Event,
         incoming: &mut Sender<IncomingMessage>,
-        addr_to_stream_key: &HashMap<SocketAddr, usize>,
-    ) -> Result<()> {
+        clients: &mut ClientRegistry,
+    ) -> Result<(), HandleEventError> {
         if event.readable {
-            while let Some(message) = self.next_message(addr_to_stream_key)? {
-                incoming.send(message)?;
+            while let Some((header, payload)) = self.next_parsed_datagram(clients)? {
+                incoming.send(IncomingMessage {
+                    data: payload,
+                    channel: header.channel(),
+                    client_key: event.key,
+                })?;
             }
         }
         if event.writable {
@@ -93,60 +103,61 @@ impl UdpSocketHandler {
         Ok(())
     }
 
-    fn next_message(
+    fn next_parsed_datagram(
         &mut self,
-        addr_to_stream_key: &HashMap<SocketAddr, usize>,
-    ) -> Result<Option<IncomingMessage>> {
+        clients: &mut ClientRegistry,
+    ) -> io::Result<Option<(Header, BytesMut)>> {
         let mut buf = [0; MAX_PACKET_SIZE];
         loop {
             // Receive packet.
-            let peer_addr = match self.socket.recv_from(&mut buf) {
-                Ok((n, peer_addr)) => {
-                    self.read_buf.put(&buf[..n]);
-                    peer_addr
-                }
+            let (n, peer_addr) = match self.socket.recv_from(&mut buf) {
+                Ok(recv) => recv,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
                 Err(e) => return Err(e.into()),
             };
 
-            // Get client or drop.
-            let Some(client_key) = addr_to_stream_key.get(&peer_addr).copied() else {
+            // Drop packet if client is unknown.
+            let Some(client) = clients.get_mut_by_addr(peer_addr) else {
                 continue;
             };
 
-            // Extract payload.
-            let mut payload = self.read_buf.split();
+            // Buffer datagram.
+            self.read_buf.put(&buf[..n]);
+            let mut datagram = self.read_buf.split();
 
-            // Split header or drop.
-            let header = match Header::split_from(&mut payload) {
+            // Parse header or drop.
+            let header = match Header::split_from(&mut datagram) {
                 Ok(header) => header,
                 Err(_) => continue,
             };
-            let data = payload;
+            let payload = datagram;
 
-            // React to header
-            match header {
-                Header::Classic { channel, seq: _ } => {
-                    return Ok(Some(IncomingMessage {
-                        data,
-                        channel,
-                        client_key,
-                    }));
-                }
+            // Drop packet if not in client window.
+            if !client.recv_seq_window.check_and_mark(header.seq()) {
+                continue;
             }
+
+            return Ok(Some((header, payload)));
         }
     }
 
-    /// Try draining write queue until it would block.
+    /// Try draining datagram queue until socket would block.
     fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some((payload, peer_addr)) = self.payloads_queue.pop_back() {
-            match self.socket.send_to(&payload, peer_addr) {
+        while let Some(AddressedDatagram {
+            datagram,
+            peer_addr,
+        }) = self.datagrams_queue.pop_back()
+        {
+            match self.socket.send_to(&datagram, peer_addr) {
                 // Complete write.
                 Ok(_) => (),
 
-                // Socket full.
+                // Socket full: Push back into queue and return without error.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.payloads_queue.push_back((payload, peer_addr));
+                    self.datagrams_queue.push_back(AddressedDatagram {
+                        datagram,
+                        peer_addr,
+                    });
                     return Ok(());
                 }
 
@@ -154,12 +165,50 @@ impl UdpSocketHandler {
                 Err(e) => return Err(e),
             }
         }
-        // Exiting loop => All queued writes have been sent.
+        // Exiting loop => All queued datagrams have been sent.
 
         // Remove writable interest.
         self.current_interest.writable = false;
         poller.modify(&self.socket, self.current_interest)?;
 
         Ok(())
+    }
+}
+
+// ---- Errors ----
+
+#[derive(Debug)]
+pub enum HandleEventError {
+    ChannelDisconnected,
+    Io(io::Error),
+}
+
+impl From<io::Error> for HandleEventError {
+    fn from(e: io::Error) -> Self {
+        HandleEventError::Io(e)
+    }
+}
+
+impl<T> From<SendError<T>> for HandleEventError {
+    fn from(_e: SendError<T>) -> Self {
+        HandleEventError::ChannelDisconnected
+    }
+}
+
+impl fmt::Display for HandleEventError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HandleEventError::Io(e) => write!(f, "IO error: {}", e),
+            HandleEventError::ChannelDisconnected => write!(f, "Channel disconnected"),
+        }
+    }
+}
+
+impl std::error::Error for HandleEventError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HandleEventError::Io(e) => Some(e),
+            _ => None,
+        }
     }
 }

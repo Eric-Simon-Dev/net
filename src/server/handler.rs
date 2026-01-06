@@ -1,21 +1,21 @@
+mod client;
 mod tcp_listener_handler;
 mod tcp_stream_handler;
 mod udp_socket_handler;
 
 use std::{
-    collections::HashMap,
     io,
-    net::{SocketAddr, TcpListener, UdpSocket},
+    net::{TcpListener, UdpSocket},
     sync::mpsc::{Receiver, Sender, TryRecvError},
     time::Duration,
 };
 
 use polling::{Event, Poller};
-use slab::Slab;
 
 use super::{Guarantees, IncomingMessage, OutgoingMessage};
+use client::ClientRegistry;
 use tcp_listener_handler::TcpListenerHandler;
-use tcp_stream_handler::TcpStreamHandler;
+use tcp_stream_handler::{HandleEventError as TcpStreamHandleError, TcpStreamHandler};
 use udp_socket_handler::UdpSocketHandler;
 
 type Error = Box<dyn std::error::Error>;
@@ -28,8 +28,7 @@ const UDP_SOCKET_KEY: usize = usize::MAX - 2;
 
 pub struct Handler {
     // ---- Clients ----
-    clients: Slab<Client>,
-    addr_to_key: HashMap<SocketAddr, usize>,
+    clients: ClientRegistry,
 
     // ---- Handlers ----
     tcp: TcpListenerHandler,
@@ -38,15 +37,6 @@ pub struct Handler {
     // ---- Communication ----
     incoming: Sender<IncomingMessage>,
     outgoing: Receiver<OutgoingMessage>,
-}
-
-struct Client {
-    // ---- Handler ----
-    tcp: TcpStreamHandler,
-
-    // ---- Data ----
-    addr: SocketAddr,
-    seq: u64,
 }
 
 impl Handler {
@@ -58,8 +48,7 @@ impl Handler {
         outgoing: Receiver<OutgoingMessage>,
     ) -> io::Result<Self> {
         Ok(Handler {
-            clients: Slab::new(),
-            addr_to_key: HashMap::new(),
+            clients: ClientRegistry::new(),
             tcp: TcpListenerHandler::new(tcp_listener, poller, TCP_LISTENER_KEY)?,
             udp: UdpSocketHandler::new(udp_socket, poller, UDP_SOCKET_KEY)?,
             incoming,
@@ -69,19 +58,28 @@ impl Handler {
 
     pub fn handle_socket_event(&mut self, poller: &Poller, event: Event) -> Result<()> {
         match event.key {
-            TCP_LISTENER_KEY => {
-                self.tcp
-                    .handle_event(poller, &mut self.clients, &mut self.addr_to_key)?
-            }
-            UDP_SOCKET_KEY => {
-                self.udp
-                    .handle_event(poller, event, &mut self.incoming, &self.addr_to_key)?
-            }
-            key => self.clients[key]
+            TCP_LISTENER_KEY => self
                 .tcp
-                .handle_event(poller, event, &mut self.incoming)?,
+                .handle_event(poller, &mut self.clients)
+                .map_err(|e| e.into()),
+            UDP_SOCKET_KEY => self
+                .udp
+                .handle_event(poller, event, &mut self.incoming, &mut self.clients)
+                .map_err(|e| e.into()),
+            key => match self.clients[key]
+                .tcp
+                .handle_event(poller, event, &mut self.incoming)
+            {
+                Ok(_) => Ok(()),
+                Err(
+                    TcpStreamHandleError::ConnectionClosed | TcpStreamHandleError::InvalidHeader(_),
+                ) => {
+                    self.clients.remove_client(key);
+                    Ok(())
+                }
+                Err(e) => Err(e.into()),
+            },
         }
-        Ok(())
     }
 
     pub fn check_outgoing_messages(&mut self, poller: &Poller) -> Result<()> {
@@ -98,7 +96,7 @@ impl Handler {
         match message.guarantees {
             Guarantees::None => {
                 // Get client or drop message.
-                let Some(client) = self.clients.get_mut(message.client_key) else {
+                let Some(client) = self.clients.get_mut_by_key(message.client_key) else {
                     return Ok(());
                 };
 
@@ -107,13 +105,12 @@ impl Handler {
                     &message.data,
                     message.channel,
                     client.addr,
-                    client.seq,
+                    &mut client.send_seq,
                 )?;
-                client.seq += 1;
             }
             Guarantees::Delivery | Guarantees::DeliveryOrder => {
                 // Get client or drop message.
-                let Some(client) = self.clients.get_mut(message.client_key) else {
+                let Some(client) = self.clients.get_mut_by_key(message.client_key) else {
                     return Ok(());
                 };
 

@@ -54,7 +54,7 @@ pub mod server;
 
 mod protocol;
 
-pub use protocol::tcp::MAX_PAYLOAD_LENGTH as MAX_TCP_PAYLOAD_LENGTH;
+pub use protocol::MAX_PAYLOAD_LENGTH;
 
 #[cfg(test)]
 mod tests;

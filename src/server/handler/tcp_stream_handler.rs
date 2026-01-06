@@ -1,3 +1,5 @@
+//! Frame = header + payload.
+
 use std::{
     collections::VecDeque,
     fmt,
@@ -73,7 +75,7 @@ impl TcpStreamHandler {
         incoming: &mut Sender<IncomingMessage>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            self.drain_socket()?;
+            self.drain_socket()?; // Remove on client disconnection
             while let Some((header, payload)) = self.parse_next_frame()? {
                 incoming.send(IncomingMessage {
                     data: payload,
@@ -146,6 +148,7 @@ impl TcpStreamHandler {
 // ---- Errors ----
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum QueueMessageError {
     InvalidHeader(HeaderCreateError),
     Io(std::io::Error),
@@ -182,6 +185,7 @@ impl std::error::Error for QueueMessageError {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum HandleEventError {
     ConnectionClosed,
     InvalidHeader(HeaderDecodeError),
@@ -210,7 +214,7 @@ impl<T> From<SendError<T>> for HandleEventError {
 impl fmt::Display for HandleEventError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HandleEventError::ConnectionClosed => write!(f, "connection closed by remote peer"),
+            HandleEventError::ConnectionClosed => write!(f, "client close connection"),
             HandleEventError::InvalidHeader(e) => write!(f, "invalid protocol header: {}", e),
             HandleEventError::ChannelDisconnected => {
                 write!(f, "incoming message channel disconnected")

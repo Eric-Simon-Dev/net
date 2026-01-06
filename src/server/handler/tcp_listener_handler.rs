@@ -1,13 +1,11 @@
 use std::{
-    collections::HashMap,
     io,
     net::{SocketAddr, TcpListener, TcpStream},
 };
 
 use polling::{Event, PollMode, Poller};
-use slab::Slab;
 
-use super::{Client, TcpStreamHandler};
+use super::ClientRegistry;
 
 pub struct TcpListenerHandler {
     socket: TcpListener,
@@ -30,11 +28,10 @@ impl TcpListenerHandler {
     pub fn handle_event(
         &mut self,
         poller: &Poller,
-        clients: &mut Slab<Client>,
-        addr_to_key: &mut HashMap<SocketAddr, usize>,
+        clients: &mut ClientRegistry,
     ) -> io::Result<()> {
-        while let Some(connection) = self.next_connection()? {
-            Self::add_client(poller, clients, addr_to_key, connection)?;
+        while let Some((tcp_stream, addr)) = self.next_connection()? {
+            clients.add_client(poller, tcp_stream, addr)?;
         }
         Ok(())
     }
@@ -45,29 +42,5 @@ impl TcpListenerHandler {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
             Err(e) => Err(e),
         }
-    }
-
-    fn add_client(
-        poller: &Poller,
-        clients: &mut Slab<Client>,
-        addr_to_key: &mut HashMap<SocketAddr, usize>,
-        (tcp_stream, addr): (TcpStream, SocketAddr),
-    ) -> io::Result<()> {
-        // Get client entry.
-        let entry = clients.vacant_entry();
-        let key = entry.key();
-
-        // Create client.
-        let client = Client {
-            tcp: TcpStreamHandler::new(tcp_stream, poller, key)?,
-            addr,
-            seq: 0,
-        };
-
-        // Update states.
-        entry.insert(client);
-        addr_to_key.insert(addr, key);
-
-        Ok(())
     }
 }

@@ -1,3 +1,5 @@
+//! Frame = header + payload.
+
 use std::{
     collections::VecDeque,
     fmt,

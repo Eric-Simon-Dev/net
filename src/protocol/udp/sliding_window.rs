@@ -65,9 +65,4 @@ impl SlidingWindow {
             true
         }
     }
-
-    /// Returns the highest sequence number seen so far.
-    pub fn max_seq(&self) -> u64 {
-        self.max_seq
-    }
 }

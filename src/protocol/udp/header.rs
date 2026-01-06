@@ -30,6 +30,18 @@ pub enum Header {
 }
 
 impl Header {
+    pub fn channel(&self) -> u8 {
+        match *self {
+            Header::Classic { channel, .. } => channel,
+        }
+    }
+
+    pub fn seq(&self) -> u64 {
+        match *self {
+            Header::Classic { seq, .. } => seq,
+        }
+    }
+
     /// Encodes and appends this header to the end of `buf`.
     pub fn put_into(&self, buf: &mut BytesMut) {
         match *self {
@@ -53,15 +65,15 @@ impl Header {
     ///   contain enough bytes to decode a complete header.
     /// - [`HeaderDecodingError::UnknownVariant`] if the header variant
     ///   byte is not recognized.
-    pub fn split_from(buf: &mut BytesMut) -> Result<Self, HeaderDecodingError> {
+    pub fn split_from(buf: &mut BytesMut) -> Result<Self, DecodeError> {
         if buf.is_empty() {
-            return Err(HeaderDecodingError::BufferTooSmall);
+            return Err(DecodeError::BufferTooSmall);
         }
 
         match buf[VARIANT_INDEX] {
             classic::VARIANT => {
                 if buf.len() < classic::LEN {
-                    return Err(HeaderDecodingError::BufferTooSmall);
+                    return Err(DecodeError::BufferTooSmall);
                 }
 
                 // Remove encoded header.
@@ -75,26 +87,28 @@ impl Header {
 
                 Ok(header)
             }
-            variant => Err(HeaderDecodingError::UnknownVariant(variant)),
+            variant => Err(DecodeError::UnknownVariant(variant)),
         }
     }
 }
 
 #[derive(Debug)]
-pub enum HeaderDecodingError {
+pub enum DecodeError {
     /// The buffer does not contain enough bytes to decode a complete header.
     BufferTooSmall,
     /// The header variant byte is not recognized.
     UnknownVariant(u8),
 }
 
-impl fmt::Display for HeaderDecodingError {
+impl fmt::Display for DecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HeaderDecodingError::BufferTooSmall => write!(f, "buffer is too small"),
-            HeaderDecodingError::UnknownVariant(v) => write!(f, "unknown header variant {}", v),
+            DecodeError::BufferTooSmall => {
+                write!(f, "buffer does not contain enough bytes to decode header")
+            }
+            DecodeError::UnknownVariant(v) => write!(f, "unknown header variant {}", v),
         }
     }
 }
 
-impl std::error::Error for HeaderDecodingError {}
+impl std::error::Error for DecodeError {}
