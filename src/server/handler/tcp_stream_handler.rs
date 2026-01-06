@@ -2,7 +2,6 @@
 
 use std::{
     collections::VecDeque,
-    fmt,
     io::{self, Read, Write},
     net::TcpStream,
     sync::mpsc::{SendError, Sender},
@@ -10,6 +9,7 @@ use std::{
 
 use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
+use thiserror::Error;
 
 use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
 
@@ -147,89 +147,30 @@ impl TcpStreamHandler {
 
 // ---- Errors ----
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum QueueMessageError {
-    InvalidHeader(HeaderCreateError),
-    Io(std::io::Error),
+    #[error("frame header creation failed: {0}")]
+    FrameHeaderCreation(#[from] HeaderCreateError),
+
+    /// Poller interest update.
+    #[error("I/O error while queueing message: {0}")]
+    Io(#[from] io::Error),
 }
 
-impl From<HeaderCreateError> for QueueMessageError {
-    fn from(e: HeaderCreateError) -> Self {
-        QueueMessageError::InvalidHeader(e)
-    }
-}
-
-impl From<std::io::Error> for QueueMessageError {
-    fn from(e: std::io::Error) -> Self {
-        QueueMessageError::Io(e)
-    }
-}
-
-impl fmt::Display for QueueMessageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            QueueMessageError::InvalidHeader(e) => write!(f, "failed to create header: {}", e),
-            QueueMessageError::Io(e) => write!(f, "I/O error while queueing message: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for QueueMessageError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            QueueMessageError::InvalidHeader(e) => Some(e),
-            QueueMessageError::Io(e) => Some(e),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum HandleEventError {
+    #[error("client closed connection")]
     ConnectionClosed,
-    InvalidHeader(HeaderDecodeError),
-    ChannelDisconnected,
-    Io(std::io::Error),
-}
 
-impl From<std::io::Error> for HandleEventError {
-    fn from(e: std::io::Error) -> Self {
-        HandleEventError::Io(e)
-    }
-}
+    #[error("frame header decoding failed: {0}")]
+    FrameHeaderDecoding(#[from] HeaderDecodeError),
 
-impl From<HeaderDecodeError> for HandleEventError {
-    fn from(e: HeaderDecodeError) -> Self {
-        HandleEventError::InvalidHeader(e)
-    }
-}
+    #[error("incoming message sending failed: {0}")]
+    IncomingMessageSending(#[from] SendError<IncomingMessage>),
 
-impl<T> From<SendError<T>> for HandleEventError {
-    fn from(_e: SendError<T>) -> Self {
-        HandleEventError::ChannelDisconnected
-    }
-}
-
-impl fmt::Display for HandleEventError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HandleEventError::ConnectionClosed => write!(f, "client close connection"),
-            HandleEventError::InvalidHeader(e) => write!(f, "invalid protocol header: {}", e),
-            HandleEventError::ChannelDisconnected => {
-                write!(f, "incoming message channel disconnected")
-            }
-            HandleEventError::Io(e) => write!(f, "I/O error while handling socket event: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for HandleEventError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            HandleEventError::InvalidHeader(e) => Some(e),
-            HandleEventError::Io(e) => Some(e),
-            _ => None,
-        }
-    }
+    /// Can be socket read, socket write or poller interest update.
+    #[error("I/O error while handling event: {0}")]
+    Io(#[from] io::Error),
 }

@@ -13,7 +13,7 @@ use std::{
 use bytes::BytesMut;
 use polling::{Events, Poller};
 
-use handler::{HandleOutgoingMessagesError, HandleSocketEventError, HandleTimersError, Handler};
+use handler::{HandleEventError, HandleOutgoingMessagesError, HandleTimersError, Handler};
 
 pub fn listen(
     local_addr: SocketAddr,

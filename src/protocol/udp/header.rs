@@ -1,6 +1,5 @@
-use std::fmt;
-
 use bytes::{BufMut, BytesMut};
+use thiserror::Error;
 
 /// Index of the header variant byte for all on-wire representations.
 ///
@@ -61,9 +60,9 @@ impl Header {
     /// Decodes and removes a header from the front of `buf`.
     ///
     /// # Errors
-    /// - [`HeaderDecodingError::BufferTooSmall`] if the buffer does not
+    /// - [`DecodeError::BufferTooSmall`] if the buffer does not
     ///   contain enough bytes to decode a complete header.
-    /// - [`HeaderDecodingError::UnknownVariant`] if the header variant
+    /// - [`DecodeError::UnknownVariant`] if the header variant
     ///   byte is not recognized.
     pub fn split_from(buf: &mut BytesMut) -> Result<Self, DecodeError> {
         if buf.is_empty() {
@@ -92,23 +91,11 @@ impl Header {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum DecodeError {
-    /// The buffer does not contain enough bytes to decode a complete header.
+    #[error("buffer does not contain enough bytes to decode a complete header")]
     BufferTooSmall,
-    /// The header variant byte is not recognized.
+
+    #[error("unrecognized header variant: {0}")]
     UnknownVariant(u8),
 }
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DecodeError::BufferTooSmall => {
-                write!(f, "buffer does not contain enough bytes to decode header")
-            }
-            DecodeError::UnknownVariant(v) => write!(f, "unknown header variant {}", v),
-        }
-    }
-}
-
-impl std::error::Error for DecodeError {}

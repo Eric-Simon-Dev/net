@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io,
     net::SocketAddr,
     ops::{Index, IndexMut},
 };
@@ -28,7 +27,7 @@ impl ClientRegistry {
         }
     }
 
-    pub fn add_client(&mut self, addr: SocketAddr) -> io::Result<usize> {
+    pub fn add_client(&mut self, addr: SocketAddr) -> usize {
         let entry = self.clients.vacant_entry();
         let key = entry.key();
 
@@ -41,7 +40,7 @@ impl ClientRegistry {
         self.addr_to_key.insert(addr, entry.key());
         entry.insert(client);
 
-        Ok(key)
+        key
     }
 
     pub fn remove_client(&mut self, key: usize) -> Option<Client> {

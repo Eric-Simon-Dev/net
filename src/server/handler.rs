@@ -3,7 +3,7 @@ mod tcp_stream_handler;
 mod udp_socket_handler;
 
 use std::{
-    fmt, io,
+    io,
     net::{Shutdown, TcpListener, UdpSocket},
     sync::mpsc::{Receiver, Sender, TryRecvError},
     time::Duration,
@@ -11,15 +11,19 @@ use std::{
 
 use polling::{Event, Poller};
 use slab::Slab;
+use thiserror::Error;
 
 use super::{Guarantees, IncomingMessage, OutgoingMessage};
 
 use tcp_listener_handler::TcpListenerHandler;
 use tcp_stream_handler::{
-    HandleEventError as TcpStreamHandleError, QueueMessageError as TcpStreamQueueMessageError,
+    HandleEventError as TcpStreamHandleEventError, QueueMessageError as TcpStreamQueueMessageError,
     TcpStreamHandler,
 };
-use udp_socket_handler::{HandleEventError as UdpHandleError, UdpSocketHandler};
+use udp_socket_handler::{
+    HandleEventError as UdpHandleEventError, QueueMessageError as UdpQueueMessageError,
+    UdpSocketHandler,
+};
 
 // ---- Poller keys ----
 // `usize::MAX` is reserved for internal use from the crate.
@@ -58,7 +62,7 @@ impl Handler {
         &mut self,
         poller: &Poller,
         event: Event,
-    ) -> Result<(), HandleSocketEventError> {
+    ) -> Result<(), HandleEventError> {
         match event.key {
             TCP_LISTENER_KEY => {
                 while let Some((tcp_stream, addr)) = self.tcp.handle_event()? {
@@ -66,7 +70,7 @@ impl Handler {
                     let stream_key = entry.key();
                     let tcp = TcpStreamHandler::new(tcp_stream, poller, stream_key)?;
                     entry.insert(tcp);
-                    let udp_key = self.udp.clients.add_client(addr)?;
+                    let udp_key = self.udp.clients.add_client(addr);
                     assert_eq!(stream_key, udp_key);
                 }
                 Ok(())
@@ -77,12 +81,12 @@ impl Handler {
             }
             key => match self.streams[key].handle_event(poller, event, &mut self.incoming) {
                 Ok(_) => Ok(()),
-                Err(TcpStreamHandleError::ConnectionClosed) => {
+                Err(TcpStreamHandleEventError::ConnectionClosed) => {
                     self.streams.remove(key);
                     self.udp.clients.remove_client(key);
                     Ok(())
                 }
-                Err(TcpStreamHandleError::InvalidHeader(_)) => {
+                Err(TcpStreamHandleEventError::FrameHeaderDecoding(_)) => {
                     let stream = self.streams.remove(key);
                     stream.socket.shutdown(Shutdown::Both)?;
                     self.udp.clients.remove_client(key);
@@ -101,8 +105,8 @@ impl Handler {
             match self.outgoing.try_recv() {
                 Ok(message) => self.handle_outgoing_message(poller, message)?,
                 Err(TryRecvError::Empty) => return Ok(()),
-                Err(TryRecvError::Disconnected) => {
-                    return Err(HandleOutgoingMessagesError::ChannelDisconnected);
+                Err(e) => {
+                    return Err(e.into());
                 }
             }
         }
@@ -145,102 +149,33 @@ impl Handler {
 
 // ---- Errors ----
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleSocketEventError {
-    UdpHandle(UdpHandleError),
-    TcpStreamHandle(TcpStreamHandleError),
-    Io(std::io::Error),
+pub enum HandleEventError {
+    #[error("UDP event handling failed: {0}")]
+    UdpEventHandling(#[from] UdpHandleEventError),
+
+    #[error("TCP stream event handling failed: {0}")]
+    TcpStreamEventHandling(#[from] TcpStreamHandleEventError),
+
+    /// Can be creation or destruction of TCP stream handlers.
+    #[error("I/O error while handling event: {0}")]
+    Io(#[from] io::Error),
 }
 
-impl From<std::io::Error> for HandleSocketEventError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<UdpHandleError> for HandleSocketEventError {
-    fn from(e: UdpHandleError) -> Self {
-        Self::UdpHandle(e)
-    }
-}
-
-impl From<TcpStreamHandleError> for HandleSocketEventError {
-    fn from(value: TcpStreamHandleError) -> Self {
-        Self::TcpStreamHandle(value)
-    }
-}
-
-impl fmt::Display for HandleSocketEventError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TcpStreamHandle(e) => {
-                write!(f, "error while handling TCP stream socket event: {e}")
-            }
-            Self::UdpHandle(e) => write!(f, "error while handling UDP socket event: {e}"),
-            Self::Io(e) => write!(f, "I/O error while handling socket event: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for HandleSocketEventError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::TcpStreamHandle(e) => Some(e),
-            Self::UdpHandle(e) => Some(e),
-            Self::Io(e) => Some(e),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum HandleOutgoingMessagesError {
-    ChannelDisconnected,
-    TcpQueueMessage(TcpStreamQueueMessageError),
-    Io(std::io::Error),
+    #[error("outgoing message receiving failed: {0}")]
+    OutgoingMessageReceiving(#[from] TryRecvError),
+
+    #[error("TCP stream message queueing failed: {0}")]
+    TcpStreamMessageQueueing(#[from] TcpStreamQueueMessageError),
+
+    #[error("UDP message queueing failed: {0}")]
+    UdpMessageQueueing(#[from] UdpQueueMessageError),
 }
 
-impl From<std::io::Error> for HandleOutgoingMessagesError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl From<TcpStreamQueueMessageError> for HandleOutgoingMessagesError {
-    fn from(e: TcpStreamQueueMessageError) -> Self {
-        Self::TcpQueueMessage(e)
-    }
-}
-
-impl fmt::Display for HandleOutgoingMessagesError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TcpQueueMessage(e) => write!(f, "error while queuing tcp message: {e}"),
-            Self::ChannelDisconnected => write!(f, "outgoing messages channel disconnected"),
-            Self::Io(e) => write!(f, "I/O error while handling socket event: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for HandleOutgoingMessagesError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::TcpQueueMessage(e) => Some(e),
-            Self::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum HandleTimersError {}
-
-impl fmt::Display for HandleTimersError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "timer error")
-    }
-}
-
-impl std::error::Error for HandleTimersError {}

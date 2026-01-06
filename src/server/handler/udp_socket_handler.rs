@@ -4,13 +4,14 @@ mod client;
 
 use std::{
     collections::VecDeque,
-    fmt, io,
+    io,
     net::UdpSocket,
     sync::mpsc::{SendError, Sender},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
+use thiserror::Error;
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
@@ -62,7 +63,7 @@ impl UdpSocketHandler {
         payload: &[u8],
         channel: u8,
         client_key: usize,
-    ) -> io::Result<()> {
+    ) -> Result<(), QueueMessageError> {
         // Get client or drop.
         let Some(client) = self.clients.get_mut_by_key(client_key) else {
             return Ok(());
@@ -184,38 +185,21 @@ impl UdpSocketHandler {
 
 // ---- Errors ----
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum QueueMessageError {
+    /// Poller interest update.
+    #[error("I/O error while queueing message: {0}")]
+    Io(#[from] io::Error),
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum HandleEventError {
-    ChannelDisconnected,
-    Io(io::Error),
-}
+    #[error("incoming message sending failed: {0}")]
+    IncomingMessageSending(#[from] SendError<IncomingMessage>),
 
-impl From<io::Error> for HandleEventError {
-    fn from(e: io::Error) -> Self {
-        HandleEventError::Io(e)
-    }
-}
-
-impl<T> From<SendError<T>> for HandleEventError {
-    fn from(_e: SendError<T>) -> Self {
-        HandleEventError::ChannelDisconnected
-    }
-}
-
-impl fmt::Display for HandleEventError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HandleEventError::Io(e) => write!(f, "IO error: {}", e),
-            HandleEventError::ChannelDisconnected => write!(f, "Channel disconnected"),
-        }
-    }
-}
-
-impl std::error::Error for HandleEventError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            HandleEventError::Io(e) => Some(e),
-            _ => None,
-        }
-    }
+    /// Can be socket read, socket write or poller interest update.
+    #[error("I/O error while handling event: {0}")]
+    Io(#[from] io::Error),
 }

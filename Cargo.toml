@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+thiserror = "2"
+
 # Simplify bytes ownership manipulation.
 bytes = "1"
 
@@ -12,3 +14,4 @@ polling = "3"
 
 # Vec with stable indices.
 slab = "0"
+

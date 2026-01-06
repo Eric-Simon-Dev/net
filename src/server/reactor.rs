@@ -1,8 +1,9 @@
-use std::{fmt, sync::Arc, thread};
+use std::{io, sync::Arc, thread};
 
 use polling::{Events, Poller};
+use thiserror::Error;
 
-use super::{HandleOutgoingMessagesError, HandleSocketEventError, HandleTimersError, Handler};
+use super::{HandleEventError, HandleOutgoingMessagesError, HandleTimersError, Handler};
 
 pub fn spawn(poller: Arc<Poller>, events: Events, handler: Handler) {
     thread::spawn(move || {
@@ -46,59 +47,18 @@ fn run_event_loop(
 
 // ---- Errors ----
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ReactorError {
-    HandleSocketEvent(HandleSocketEventError),
-    HandleOutgoingMessages(HandleOutgoingMessagesError),
-    HandleTimers(HandleTimersError),
-    Io(std::io::Error),
-}
+    #[error("event handling failed: {0}")]
+    EventHandling(#[from] HandleEventError),
 
-impl From<std::io::Error> for ReactorError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
+    #[error("outgoing messages handling failed: {0}")]
+    OutgoingMessagesHandling(#[from] HandleOutgoingMessagesError),
 
-impl From<HandleSocketEventError> for ReactorError {
-    fn from(e: HandleSocketEventError) -> Self {
-        Self::HandleSocketEvent(e)
-    }
-}
+    #[error("timers handling failed: {0}")]
+    TimersHandling(#[from] HandleTimersError),
 
-impl From<HandleOutgoingMessagesError> for ReactorError {
-    fn from(e: HandleOutgoingMessagesError) -> Self {
-        Self::HandleOutgoingMessages(e)
-    }
-}
-
-impl From<HandleTimersError> for ReactorError {
-    fn from(e: HandleTimersError) -> Self {
-        Self::HandleTimers(e)
-    }
-}
-
-impl fmt::Display for ReactorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "i/o error while waiting poller: {e}"),
-            Self::HandleSocketEvent(e) => write!(f, "error while handling socket event: {e}"),
-            Self::HandleOutgoingMessages(e) => {
-                write!(f, "error while handling outgoing messages: {e}")
-            }
-            Self::HandleTimers(e) => write!(f, "error while handling timers: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ReactorError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            Self::HandleSocketEvent(e) => Some(e),
-            Self::HandleOutgoingMessages(e) => Some(e),
-            Self::HandleTimers(e) => Some(e),
-        }
-    }
+    #[error("I/O error while waiting poller: {0}")]
+    Io(#[from] io::Error),
 }

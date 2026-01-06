@@ -1,6 +1,5 @@
-use std::fmt;
-
 use bytes::{BufMut, BytesMut};
+use thiserror::Error;
 
 /// Maximum allowed payload length in bytes.
 ///
@@ -25,6 +24,9 @@ pub struct Header {
 }
 
 impl Header {
+    /// # Errors
+    /// - [`CreateError::PayloadTooBig`] if the provided payload
+    ///   length exceeds [`crate::MAX_PAYLOAD_LENGTH`].
     pub fn new(payload_length: usize, channel: u8) -> Result<Self, CreateError> {
         let Ok(payload_length) = u32::try_from(payload_length) else {
             return Err(CreateError::PayloadTooBig);
@@ -56,10 +58,10 @@ impl Header {
     /// Decodes a header and removes a complete frame from the front of `buf`.
     ///
     /// # Errors
-    /// - [`HeaderDecodingError::BufferTooSmall`] if the buffer does not
-    ///   contain enough bytes to decode a full header and payload.
-    /// - [`HeaderDecodingError::PayloadTooBig`] if the decoded payload
-    ///   length exceeds [`MAX_PAYLOAD_LENGTH`].
+    /// - [`DecodeError::BufferTooSmall`] if the buffer does not
+    ///   contain enough bytes to decode a full frame.
+    /// - [`DecodeError::PayloadTooBig`] if the decoded payload
+    ///   length exceeds [`crate::MAX_PAYLOAD_LENGTH`].
     pub fn split_frame_from(buf: &mut BytesMut) -> Result<(Self, BytesMut), DecodeError> {
         if buf.len() < LEN {
             return Err(DecodeError::BufferTooSmall);
@@ -96,44 +98,17 @@ impl Header {
 
 // ---- Errors ----
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum CreateError {
-    /// The payload length exceeds [`crate::MAX_TCP_PAYLOAD_LENGTH`].
+    #[error("provided payload length exceeds `crate::MAX_PAYLOAD_LENGTH`")]
     PayloadTooBig,
 }
 
-impl fmt::Display for CreateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CreateError::PayloadTooBig => {
-                write!(f, "payload length exceeds `crate::MAX_TCP_PAYLOAD_LENGTH`")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CreateError {}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum DecodeError {
-    /// The buffer does not contain enough bytes to decode a full frame.
+    #[error("buffer does not contain enough bytes to decode a full frame")]
     BufferTooSmall,
-    /// The decoded payload length exceeds [`crate::MAX_TCP_PAYLOAD_LENGTH`].
+
+    #[error("decoded payload length exceeds `crate::MAX_PAYLOAD_LENGTH`")]
     PayloadTooBig,
 }
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DecodeError::BufferTooSmall => write!(
-                f,
-                "buffer does not contain enough bytes to decode a full frame"
-            ),
-            DecodeError::PayloadTooBig => {
-                write!(f, "payload length exceeds `crate::MAX_TCP_PAYLOAD_LENGTH`")
-            }
-        }
-    }
-}
-
-impl std::error::Error for DecodeError {}
