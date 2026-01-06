@@ -39,7 +39,7 @@ fn run_event_loop(
         handler.check_outgoing_messages(&poller)?;
 
         for event in events.iter() {
-            handler.handle_socket_event(&poller, event)?;
+            handler.handle_event(&poller, event)?;
         }
         events.clear();
     }

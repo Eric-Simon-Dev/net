@@ -28,18 +28,12 @@ impl ClientRegistry {
     }
 
     pub fn add_client(&mut self, addr: SocketAddr) -> usize {
-        let entry = self.clients.vacant_entry();
-        let key = entry.key();
-
-        let client = Client {
+        let key = self.clients.insert(Client {
             addr,
             send_seq: 0,
             recv_seq_window: SlidingWindow::new(),
-        };
-
-        self.addr_to_key.insert(addr, entry.key());
-        entry.insert(client);
-
+        });
+        self.addr_to_key.insert(addr, key);
         key
     }
 
@@ -71,6 +65,6 @@ impl IndexMut<usize> for ClientRegistry {
     fn index_mut(&mut self, key: usize) -> &mut Self::Output {
         self.clients
             .get_mut(key)
-            .expect("Client with given key does not exist")
+            .expect("client with given key does not exist")
     }
 }

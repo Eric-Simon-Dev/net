@@ -3,7 +3,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{Shutdown, TcpStream},
     sync::mpsc::{SendError, Sender},
 };
 
@@ -27,7 +27,7 @@ pub struct TcpStreamHandler {
 }
 
 impl TcpStreamHandler {
-    pub fn new(tcp_stream: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
+    pub fn create(tcp_stream: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
         tcp_stream.set_nonblocking(true)?;
 
@@ -44,7 +44,13 @@ impl TcpStreamHandler {
         })
     }
 
-    pub fn queue_message(
+    pub fn destroy(self, poller: &Poller) -> io::Result<()> {
+        self.socket.shutdown(Shutdown::Both)?;
+        poller.delete(&self.socket)?;
+        Ok(())
+    }
+
+    pub fn encode_frame_into_write_buf(
         &mut self,
         poller: &Poller,
         payload: &[u8],
@@ -75,8 +81,8 @@ impl TcpStreamHandler {
         incoming: &mut Sender<IncomingMessage>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            self.drain_socket()?; // Remove on client disconnection
-            while let Some((header, payload)) = self.parse_next_frame()? {
+            self.drain_socket_into_read_buf()?;
+            while let Some((header, payload)) = self.decode_next_frame_from_read_buf()? {
                 incoming.send(IncomingMessage {
                     data: payload,
                     channel: header.channel,
@@ -85,13 +91,12 @@ impl TcpStreamHandler {
             }
         }
         if event.writable {
-            self.fill_socket(poller)?;
+            self.fill_socket_from_write_buf(poller)?;
         }
         Ok(())
     }
 
-    /// Drain socket into read buffer.
-    fn drain_socket(&mut self) -> Result<(), HandleEventError> {
+    fn drain_socket_into_read_buf(&mut self) -> Result<(), HandleEventError> {
         let mut buf = [0; 4096];
         loop {
             match self.socket.read(&mut buf) {
@@ -103,8 +108,9 @@ impl TcpStreamHandler {
         }
     }
 
-    /// Try Parsing next frame from read buffer.
-    fn parse_next_frame(&mut self) -> Result<Option<(Header, BytesMut)>, HandleEventError> {
+    fn decode_next_frame_from_read_buf(
+        &mut self,
+    ) -> Result<Option<(Header, BytesMut)>, HandleEventError> {
         match Header::split_frame_from(&mut self.read_buf) {
             Ok(frame) => Ok(Some(frame)),
             Err(HeaderDecodeError::BufferTooSmall) => Ok(None),
@@ -112,8 +118,7 @@ impl TcpStreamHandler {
         }
     }
 
-    /// Try draining frames queue until socket would block.
-    fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
+    fn fill_socket_from_write_buf(&mut self, poller: &Poller) -> io::Result<()> {
         while let Some(mut frame) = self.frames_queue.pop_back() {
             match self.socket.write(&frame) {
                 // Partial write: Remove written bytes and push back into queue.

@@ -23,11 +23,7 @@ impl TcpListenerHandler {
         })
     }
 
-    pub fn handle_event(&mut self) -> io::Result<Option<(TcpStream, SocketAddr)>> {
-        self.next_connection()
-    }
-
-    fn next_connection(&mut self) -> io::Result<Option<(TcpStream, SocketAddr)>> {
+    pub fn next_connection(&mut self) -> io::Result<Option<(TcpStream, SocketAddr)>> {
         match self.socket.accept() {
             Ok(connection) => Ok(Some(connection)),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),

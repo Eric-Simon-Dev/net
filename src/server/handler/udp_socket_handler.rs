@@ -57,7 +57,7 @@ impl UdpSocketHandler {
         })
     }
 
-    pub fn queue_message(
+    pub fn encode_datagram_into_write_buf(
         &mut self,
         poller: &Poller,
         payload: &[u8],
@@ -101,7 +101,7 @@ impl UdpSocketHandler {
         incoming: &mut Sender<IncomingMessage>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            while let Some((header, payload)) = self.next_parsed_datagram()? {
+            while let Some((header, payload)) = self.decode_next_datagram_from_socket()? {
                 incoming.send(IncomingMessage {
                     data: payload,
                     channel: header.channel(),
@@ -110,19 +110,19 @@ impl UdpSocketHandler {
             }
         }
         if event.writable {
-            self.fill_socket(poller)?;
+            self.fill_socket_from_write_buf(poller)?;
         }
         Ok(())
     }
 
-    fn next_parsed_datagram(&mut self) -> io::Result<Option<(Header, BytesMut)>> {
+    fn decode_next_datagram_from_socket(&mut self) -> io::Result<Option<(Header, BytesMut)>> {
         let mut buf = [0; MAX_PACKET_SIZE];
         loop {
             // Receive packet.
             let (n, peer_addr) = match self.socket.recv_from(&mut buf) {
                 Ok(recv) => recv,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             };
 
             // Drop packet if client is unknown.
@@ -150,8 +150,7 @@ impl UdpSocketHandler {
         }
     }
 
-    /// Try draining datagram queue until socket would block.
-    fn fill_socket(&mut self, poller: &Poller) -> io::Result<()> {
+    fn fill_socket_from_write_buf(&mut self, poller: &Poller) -> io::Result<()> {
         while let Some(AddressedDatagram { datagram, key }) = self.datagrams_queue.pop_back() {
             // Get client or drop.
             let Some(client) = self.clients.get_mut_by_key(key) else {

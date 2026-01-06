@@ -4,7 +4,7 @@ mod udp_socket_handler;
 
 use std::{
     io,
-    net::{Shutdown, TcpListener, UdpSocket},
+    net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::mpsc::{Receiver, Sender, TryRecvError},
     time::Duration,
 };
@@ -58,43 +58,50 @@ impl Handler {
         })
     }
 
-    pub fn handle_socket_event(
-        &mut self,
-        poller: &Poller,
-        event: Event,
-    ) -> Result<(), HandleEventError> {
+    pub fn handle_event(&mut self, poller: &Poller, event: Event) -> Result<(), HandleEventError> {
         match event.key {
             TCP_LISTENER_KEY => {
-                while let Some((tcp_stream, addr)) = self.tcp.handle_event()? {
-                    let entry = self.streams.vacant_entry();
-                    let stream_key = entry.key();
-                    let tcp = TcpStreamHandler::new(tcp_stream, poller, stream_key)?;
-                    entry.insert(tcp);
-                    let udp_key = self.udp.clients.add_client(addr);
-                    assert_eq!(stream_key, udp_key);
+                while let Some(connection) = self.tcp.next_connection()? {
+                    self.add_client(poller, connection)?;
                 }
-                Ok(())
             }
             UDP_SOCKET_KEY => {
                 self.udp.handle_event(poller, event, &mut self.incoming)?;
-                Ok(())
             }
-            key => match self.streams[key].handle_event(poller, event, &mut self.incoming) {
-                Ok(_) => Ok(()),
-                Err(TcpStreamHandleEventError::ConnectionClosed) => {
-                    self.streams.remove(key);
-                    self.udp.clients.remove_client(key);
-                    Ok(())
+            key if self.streams.contains(key) => {
+                match self.streams[key].handle_event(poller, event, &mut self.incoming) {
+                    Ok(_) => (),
+                    Err(
+                        TcpStreamHandleEventError::ConnectionClosed
+                        | TcpStreamHandleEventError::FrameHeaderDecoding(_),
+                    ) => {
+                        self.remove_client(poller, key)?;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
-                Err(TcpStreamHandleEventError::FrameHeaderDecoding(_)) => {
-                    let stream = self.streams.remove(key);
-                    stream.socket.shutdown(Shutdown::Both)?;
-                    self.udp.clients.remove_client(key);
-                    Ok(())
-                }
-                Err(e) => Err(e.into()),
-            },
+            }
+            _ => (),
         }
+        Ok(())
+    }
+
+    fn add_client(
+        &mut self,
+        poller: &Poller,
+        (tcp_stream, addr): (TcpStream, SocketAddr),
+    ) -> io::Result<()> {
+        let entry = self.streams.vacant_entry();
+        let tcp = TcpStreamHandler::create(tcp_stream, poller, entry.key())?;
+        entry.insert(tcp);
+        self.udp.clients.add_client(addr);
+        Ok(())
+    }
+
+    fn remove_client(&mut self, poller: &Poller, key: usize) -> io::Result<()> {
+        let stream = self.streams.remove(key);
+        stream.destroy(poller)?;
+        self.udp.clients.remove_client(key);
+        Ok(())
     }
 
     pub fn check_outgoing_messages(
@@ -119,7 +126,7 @@ impl Handler {
     ) -> Result<(), HandleOutgoingMessagesError> {
         match message.guarantees {
             Guarantees::None => {
-                self.udp.queue_message(
+                self.udp.encode_datagram_into_write_buf(
                     poller,
                     &message.data,
                     message.channel,
@@ -127,7 +134,7 @@ impl Handler {
                 )?;
             }
             Guarantees::Delivery | Guarantees::DeliveryOrder => {
-                self.streams[message.client_key].queue_message(
+                self.streams[message.client_key].encode_frame_into_write_buf(
                     poller,
                     &message.data,
                     message.channel,
