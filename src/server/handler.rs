@@ -41,12 +41,12 @@ pub struct Handler {
 }
 
 struct Client {
+    // ---- Handler ----
+    tcp: TcpStreamHandler,
+
     // ---- Data ----
     addr: SocketAddr,
     seq: u64,
-
-    // ---- Handler ----
-    tcp: TcpStreamHandler,
 }
 
 impl Handler {

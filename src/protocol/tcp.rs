@@ -1,5 +1,5 @@
 //! Protocols over TCP.
 
-mod size;
+mod header;
 
-pub use size::*;
+pub use header::{Header, HeaderDecodingError};

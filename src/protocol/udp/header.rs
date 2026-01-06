@@ -2,94 +2,97 @@ use std::fmt;
 
 use bytes::{BufMut, BytesMut};
 
+/// Index of the header variant byte for all on-wire representations.
+///
+/// This byte is always stored first and determines how the rest of the
+/// header should be interpreted.
+const VARIANT_INDEX: usize = 0;
+
 mod classic {
     pub const VARIANT: u8 = 0;
-    pub const LEN: usize = 10;
 
     // ---- Wire format ----
     pub const CHANNEL_INDEX: usize = 1;
     pub const SEQ_RANGE: std::ops::Range<usize> = 2..10;
+    pub const LEN: usize = 10;
 }
-
-/// Always first byte.
-const VARIANT_INDEX: usize = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Header {
-    /// On wire:
-    /// - byte 0 : variant (`0`)
-    /// - byte 1 : channel
-    /// - byte 2..10 : sequence number (`u64`, big-endian)
+    /// # Wire format
+    /// ```text
+    /// byte 0      : VARIANT
+    /// byte 1      : channel
+    /// byte 2..10  : sequence number (u64, big-endian)
+    /// ```
     Classic { channel: u8, seq: u64 },
 }
 
 impl Header {
-    /// Appends this header to the end of `buf`.
-    ///
-    /// This function encodes the header in its on-wire representation and
-    /// grows the buffer accordingly.
+    /// Encodes and appends this header to the end of `buf`.
     pub fn put_into(&self, buf: &mut BytesMut) {
         match *self {
             Header::Classic { channel, seq } => {
-                let mut header = [0; classic::LEN];
-                header[VARIANT_INDEX] = classic::VARIANT;
-                header[classic::CHANNEL_INDEX] = channel;
-                header[classic::SEQ_RANGE].copy_from_slice(&seq.to_be_bytes());
-                buf.put(&header[..]);
+                // ---- Encoding ----
+                let mut header_bytes = [0; classic::LEN];
+                header_bytes[VARIANT_INDEX] = classic::VARIANT;
+                header_bytes[classic::CHANNEL_INDEX] = channel;
+                header_bytes[classic::SEQ_RANGE].copy_from_slice(&seq.to_be_bytes());
+
+                // Append encoded header.
+                buf.put(&header_bytes[..]);
             }
         }
     }
 
-    /// Splits and decodes a header from the front of `buf`.
-    ///
-    /// On success, the header is removed from `buf` and returned.
-    /// The remaining bytes in `buf` represent the payload.
+    /// Decodes and removes a header from the front of `buf`.
     ///
     /// # Errors
-    /// - [`HeaderError::Empty`] if the buffer is empty.
-    /// - [`HeaderError::Invalid`] if the buffer does not contain a complete
-    ///   header for the recognized variant.
-    /// - [`HeaderError::Unknown`] if the header variant is unknown.
+    /// - [`HeaderDecodingError::BufferTooSmall`] if the buffer does not
+    ///   contain enough bytes to decode a complete header.
+    /// - [`HeaderDecodingError::UnknownVariant`] if the header variant
+    ///   byte is not recognized.
     pub fn split_from(buf: &mut BytesMut) -> Result<Self, HeaderDecodingError> {
         if buf.is_empty() {
-            return Err(HeaderDecodingError::EmptyBuffer);
+            return Err(HeaderDecodingError::BufferTooSmall);
         }
 
         match buf[VARIANT_INDEX] {
             classic::VARIANT => {
                 if buf.len() < classic::LEN {
-                    return Err(HeaderDecodingError::Invalid);
+                    return Err(HeaderDecodingError::BufferTooSmall);
                 }
 
-                let header = buf.split_to(classic::LEN);
+                // Remove encoded header.
+                let header_bytes = buf.split_to(classic::LEN);
 
-                let channel = header[classic::CHANNEL_INDEX];
-                let seq = u64::from_be_bytes(header[classic::SEQ_RANGE].try_into().unwrap());
+                // ---- Decoding ----
+                let header = Header::Classic {
+                    channel: header_bytes[classic::CHANNEL_INDEX],
+                    seq: u64::from_be_bytes(header_bytes[classic::SEQ_RANGE].try_into().unwrap()),
+                };
 
-                Ok(Header::Classic { channel, seq })
+                Ok(header)
             }
-            variant => Err(HeaderDecodingError::Unknown(variant)),
+            variant => Err(HeaderDecodingError::UnknownVariant(variant)),
         }
     }
 }
 
 #[derive(Debug)]
 pub enum HeaderDecodingError {
-    /// The buffer is empty.
-    EmptyBuffer,
-    /// The header variant is recognized but the data is invalid or incomplete.
-    Invalid,
-    /// The header variant is unknown.
-    Unknown(u8),
+    /// The buffer does not contain enough bytes to decode a complete header.
+    BufferTooSmall,
+    /// The header variant byte is not recognized.
+    UnknownVariant(u8),
 }
 
 impl fmt::Display for HeaderDecodingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HeaderDecodingError::EmptyBuffer => write!(f, "buffer is empty"),
-            HeaderDecodingError::Invalid => write!(f, "invalid or incomplete header"),
-            HeaderDecodingError::Unknown(v) => write!(f, "unknown header variant {}", v),
+            HeaderDecodingError::BufferTooSmall => write!(f, "buffer is too small"),
+            HeaderDecodingError::UnknownVariant(v) => write!(f, "unknown header variant {}", v),
         }
     }
 }

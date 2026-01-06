@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io,
-    net::{SocketAddr, TcpListener},
+    net::{SocketAddr, TcpListener, TcpStream},
 };
 
 use polling::{Event, PollMode, Poller};
@@ -33,31 +33,41 @@ impl TcpListenerHandler {
         clients: &mut Slab<Client>,
         addr_to_key: &mut HashMap<SocketAddr, usize>,
     ) -> io::Result<()> {
-        self.drain_socket(poller, clients, addr_to_key)
+        while let Some(connection) = self.next_connection()? {
+            Self::add_client(poller, clients, addr_to_key, connection)?;
+        }
+        Ok(())
     }
 
-    fn drain_socket(
-        &mut self,
+    fn next_connection(&mut self) -> io::Result<Option<(TcpStream, SocketAddr)>> {
+        match self.socket.accept() {
+            Ok(connection) => Ok(Some(connection)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn add_client(
         poller: &Poller,
         clients: &mut Slab<Client>,
         addr_to_key: &mut HashMap<SocketAddr, usize>,
+        (tcp_stream, addr): (TcpStream, SocketAddr),
     ) -> io::Result<()> {
-        loop {
-            match self.socket.accept() {
-                Ok((tcp_stream, addr)) => {
-                    // Create and insert client.
-                    let entry = clients.vacant_entry();
-                    let key = entry.key();
-                    let tcp = TcpStreamHandler::new(tcp_stream, poller, key)?;
-                    let client = Client { addr, seq: 0, tcp };
-                    entry.insert(client);
+        // Get client entry.
+        let entry = clients.vacant_entry();
+        let key = entry.key();
 
-                    // Update mapping.
-                    addr_to_key.insert(addr, key);
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(e) => return Err(e),
-            }
-        }
+        // Create client.
+        let client = Client {
+            tcp: TcpStreamHandler::new(tcp_stream, poller, key)?,
+            addr,
+            seq: 0,
+        };
+
+        // Update states.
+        entry.insert(client);
+        addr_to_key.insert(addr, key);
+
+        Ok(())
     }
 }

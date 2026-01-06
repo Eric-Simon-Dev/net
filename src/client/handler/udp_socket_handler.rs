@@ -51,7 +51,7 @@ impl UdpSocketHandler {
         let payload = self.write_buf.split().freeze();
         self.payloads_queue.push_front(payload);
 
-        // Update socket interest
+        // Update interest with writable.
         if !self.current_interest.writable {
             self.current_interest.writable = true;
             poller.modify(&self.socket, self.current_interest)?;
@@ -120,7 +120,7 @@ impl UdpSocketHandler {
                 }
 
                 // Fatal error.
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             }
         }
 
