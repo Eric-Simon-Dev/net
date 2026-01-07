@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    ops::{Index, IndexMut},
-};
+use std::{collections::HashMap, net::SocketAddr};
 
 use slab::Slab;
 
@@ -50,21 +46,5 @@ impl ClientRegistry {
     pub fn get_mut_by_addr(&mut self, addr: SocketAddr) -> Option<&mut Client> {
         let key = self.addr_to_key.get(&addr).copied()?;
         self.clients.get_mut(key)
-    }
-}
-
-impl Index<usize> for ClientRegistry {
-    type Output = Client;
-
-    fn index(&self, key: usize) -> &Self::Output {
-        &self.clients[key]
-    }
-}
-
-impl IndexMut<usize> for ClientRegistry {
-    fn index_mut(&mut self, key: usize) -> &mut Self::Output {
-        self.clients
-            .get_mut(key)
-            .expect("client with given key does not exist")
     }
 }

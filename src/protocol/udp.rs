@@ -3,7 +3,7 @@
 mod header;
 mod sliding_window;
 
-pub use header::{DecodeError as HeaderDecodeError, Header};
+pub use header::Header;
 
 pub use sliding_window::SlidingWindow;
 

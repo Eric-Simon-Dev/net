@@ -71,11 +71,11 @@ fn multiple_exchanges_delivery_guarantee() {
 fn run_server(server_addr: SocketAddr, guarantees: server::Guarantees) {
     use server::{OutgoingMessage, listen};
 
-    let (sender, receiver, waker) = listen(server_addr).unwrap();
+    let (outgoing, incoming, waker) = listen(server_addr).unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
-        let mut msg = receiver.recv().unwrap();
+        let mut msg = incoming.recv().unwrap();
         msg.data[0] += 1;
         let msg = OutgoingMessage {
             data: msg.data,
@@ -83,19 +83,19 @@ fn run_server(server_addr: SocketAddr, guarantees: server::Guarantees) {
             client_key: msg.client_key,
             guarantees,
         };
-        sender.send(msg).unwrap();
-        waker.wake().unwrap();
+        outgoing.send(msg).unwrap();
+        waker.process_available_operations().unwrap();
     }
 
     // Final receive: ensure the expected value is reached.
-    let msg = receiver.recv().unwrap();
+    let msg = incoming.recv().unwrap();
     assert_eq!(msg.data[0], 32);
 }
 
 fn run_client(client_addr: SocketAddr, server_addr: SocketAddr, guarantees: client::Guarantees) {
     use client::{OutgoingMessage, connect};
 
-    let (sender, receiver, waker) = connect(client_addr, server_addr).unwrap();
+    let (outgoing, incoming, waker) = connect(client_addr, server_addr).unwrap();
 
     // Initial message with value 0.
     let msg = OutgoingMessage {
@@ -103,19 +103,19 @@ fn run_client(client_addr: SocketAddr, server_addr: SocketAddr, guarantees: clie
         channel: 0,
         guarantees,
     };
-    sender.send(msg).unwrap();
+    outgoing.send(msg).unwrap();
     waker.wake().unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
-        let mut msg = receiver.recv().unwrap();
+        let mut msg = incoming.recv().unwrap();
         msg.data[0] += 1;
         let msg = OutgoingMessage {
             data: msg.data,
             channel: msg.channel,
             guarantees,
         };
-        sender.send(msg).unwrap();
+        outgoing.send(msg).unwrap();
         waker.wake().unwrap();
     }
 }

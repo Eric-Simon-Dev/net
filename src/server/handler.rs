@@ -1,6 +1,6 @@
-mod tcp_listener_handler;
+mod tcp_handler;
 mod tcp_stream_handler;
-mod udp_socket_handler;
+mod udp_handler;
 
 use std::{
     io,
@@ -9,32 +9,32 @@ use std::{
     time::Duration,
 };
 
-use polling::{Event, Poller};
+use polling::{Event, Events, Poller};
 use slab::Slab;
 use thiserror::Error;
 
 use super::{Guarantees, IncomingMessage, OutgoingMessage};
 
-use tcp_listener_handler::TcpListenerHandler;
+use tcp_handler::{NextConnectionError as TcpNextConnectionError, TcpHandler};
 use tcp_stream_handler::{
-    HandleEventError as TcpStreamHandleEventError, QueueMessageError as TcpStreamQueueMessageError,
-    TcpStreamHandler,
+    HandleEventError as TcpStreamHandleEventError,
+    QueueOutgoingMessageError as TcpStreamQueueOutgoingMessageError, TcpStreamHandler,
 };
-use udp_socket_handler::{
-    HandleEventError as UdpHandleEventError, QueueMessageError as UdpQueueMessageError,
-    UdpSocketHandler,
+use udp_handler::{
+    HandleEventError as UdpHandleEventError,
+    QueueOutgoingMessageError as UdpQueueOutgoingMessageError, UdpHandler,
 };
 
 // ---- Poller keys ----
 // `usize::MAX` is reserved for internal use from the crate.
-const TCP_LISTENER_KEY: usize = usize::MAX - 1;
-const UDP_SOCKET_KEY: usize = usize::MAX - 2;
+const TCP_KEY: usize = usize::MAX - 1;
+const UDP_KEY: usize = usize::MAX - 2;
 
 pub struct Handler {
     // ---- Handlers ----
-    tcp: TcpListenerHandler,
-    udp: UdpSocketHandler,
-    streams: Slab<TcpStreamHandler>,
+    tcp: TcpHandler,
+    udp: UdpHandler,
+    tcp_streams: Slab<TcpStreamHandler>,
 
     // ---- Communication ----
     incoming: Sender<IncomingMessage>,
@@ -43,79 +43,146 @@ pub struct Handler {
 
 impl Handler {
     pub fn new(
-        tcp_listener: TcpListener,
-        udp_socket: UdpSocket,
+        tcp: TcpListener,
+        udp: UdpSocket,
         poller: &Poller,
         incoming: Sender<IncomingMessage>,
         outgoing: Receiver<OutgoingMessage>,
     ) -> io::Result<Self> {
         Ok(Handler {
-            tcp: TcpListenerHandler::new(tcp_listener, poller, TCP_LISTENER_KEY)?,
-            udp: UdpSocketHandler::new(udp_socket, poller, UDP_SOCKET_KEY)?,
-            streams: Slab::new(),
+            tcp: TcpHandler::new(tcp, poller, TCP_KEY)?,
+            udp: UdpHandler::new(udp, poller, UDP_KEY)?,
+            tcp_streams: Slab::new(),
             incoming,
             outgoing,
         })
     }
+}
 
-    pub fn handle_event(&mut self, poller: &Poller, event: Event) -> Result<(), HandleEventError> {
-        match event.key {
-            TCP_LISTENER_KEY => {
-                while let Some(connection) = self.tcp.next_connection()? {
-                    self.add_client(poller, connection)?;
-                }
-            }
-            UDP_SOCKET_KEY => {
-                self.udp.handle_event(poller, event, &mut self.incoming)?;
-            }
-            key if self.streams.contains(key) => {
-                match self.streams[key].handle_event(poller, event, &mut self.incoming) {
-                    Ok(_) => (),
-                    Err(
-                        TcpStreamHandleEventError::ConnectionClosed
-                        | TcpStreamHandleEventError::FrameHeaderDecoding(_),
-                    ) => {
-                        self.remove_client(poller, key)?;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            _ => (),
-        }
-        Ok(())
-    }
+// ==========================================================================
+// Client management
+// ==========================================================================
 
+impl Handler {
     fn add_client(
         &mut self,
         poller: &Poller,
         (tcp_stream, addr): (TcpStream, SocketAddr),
     ) -> io::Result<()> {
-        let entry = self.streams.vacant_entry();
-        let tcp = TcpStreamHandler::create(tcp_stream, poller, entry.key())?;
-        entry.insert(tcp);
+        // Add a new TCP stream handler.
+        let entry = self.tcp_streams.vacant_entry();
+        let tcp_stream = TcpStreamHandler::create(tcp_stream, poller, entry.key())?;
+        entry.insert(tcp_stream);
+
+        // Add a new client entry in UDP handler.
         self.udp.clients.add_client(addr);
+
         Ok(())
     }
 
     fn remove_client(&mut self, poller: &Poller, key: usize) -> io::Result<()> {
-        let stream = self.streams.remove(key);
-        stream.destroy(poller)?;
+        // Remove from TCP streams handlers.
+        let tcp_stream = self.tcp_streams.remove(key);
+        tcp_stream.destroy(poller)?;
+
+        // Remove from UDP handler client registry.
         self.udp.clients.remove_client(key);
+
+        Ok(())
+    }
+}
+
+// ==========================================================================
+// Handle events
+// ==========================================================================
+
+impl Handler {
+    pub fn handle_events(
+        &mut self,
+        poller: &Poller,
+        events: &Events,
+    ) -> Result<(), HandleEventsError> {
+        for event in events.iter() {
+            match event.key {
+                TCP_KEY => self.handle_tcp_event(poller)?,
+                UDP_KEY => self.handle_udp_event(poller, event)?,
+                _tcp_stream_key => self.handle_tcp_stream_event(poller, event)?,
+            }
+        }
         Ok(())
     }
 
-    pub fn check_outgoing_messages(
+    fn handle_tcp_event(&mut self, poller: &Poller) -> Result<(), HandleEventsError> {
+        while let Some(connection) = self.tcp.next_connection()? {
+            self.add_client(poller, connection)?;
+        }
+        Ok(())
+    }
+
+    fn handle_udp_event(&mut self, poller: &Poller, event: Event) -> Result<(), HandleEventsError> {
+        self.udp.handle_event(poller, event, &mut self.incoming)?;
+        Ok(())
+    }
+
+    fn handle_tcp_stream_event(
+        &mut self,
+        poller: &Poller,
+        event: Event,
+    ) -> Result<(), HandleEventsError> {
+        if let Some(tcp_stream) = self.tcp_streams.get_mut(event.key) {
+            match tcp_stream.handle_event(poller, event, &mut self.incoming) {
+                Ok(_) => (),
+                Err(
+                    TcpStreamHandleEventError::ConnectionClosed
+                    | TcpStreamHandleEventError::Header(_),
+                ) => {
+                    self.remove_client(poller, event.key)?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum HandleEventsError {
+    #[error("failed to handle TCP event: {0}")]
+    Tcp(#[from] TcpNextConnectionError),
+
+    #[error("failed to handle UDP event: {0}")]
+    Udp(#[from] UdpHandleEventError),
+
+    #[error("failed to handle TCP stream event: {0}")]
+    TcpStream(#[from] TcpStreamHandleEventError),
+
+    #[error("failed to add/remove client: {0}")]
+    ClientManagement(#[from] io::Error),
+}
+
+// ==========================================================================
+// Handle available outgoing messages
+// ==========================================================================
+
+impl Handler {
+    pub fn handle_available_outgoing_messages(
         &mut self,
         poller: &Poller,
     ) -> Result<(), HandleOutgoingMessagesError> {
-        loop {
-            match self.outgoing.try_recv() {
-                Ok(message) => self.handle_outgoing_message(poller, message)?,
-                Err(TryRecvError::Empty) => return Ok(()),
-                Err(e) => {
-                    return Err(e.into());
-                }
-            }
+        while let Some(message) = self.next_outgoing_message()? {
+            self.handle_outgoing_message(poller, message)?;
+        }
+        Ok(())
+    }
+
+    fn next_outgoing_message(
+        &mut self,
+    ) -> Result<Option<OutgoingMessage>, HandleOutgoingMessagesError> {
+        match self.outgoing.try_recv() {
+            Ok(message) => Ok(Some(message)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -126,61 +193,43 @@ impl Handler {
     ) -> Result<(), HandleOutgoingMessagesError> {
         match message.guarantees {
             Guarantees::None => {
-                self.udp.encode_datagram_into_write_buf(
-                    poller,
-                    &message.data,
-                    message.channel,
-                    message.client_key,
-                )?;
+                self.udp.queue_outgoing_message(poller, message)?;
             }
             Guarantees::Delivery | Guarantees::DeliveryOrder => {
-                self.streams[message.client_key].encode_frame_into_write_buf(
-                    poller,
-                    &message.data,
-                    message.channel,
-                )?;
+                if let Some(tcp_stream) = self.tcp_streams.get_mut(message.client_key) {
+                    tcp_stream.queue_outgoing_message(poller, message)?;
+                }
             }
         }
-
         Ok(())
     }
+}
 
-    pub fn check_timers(&mut self) -> Result<(), HandleTimersError> {
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum HandleOutgoingMessagesError {
+    #[error("failed to receive message from channel: {0}")]
+    Channel(#[from] TryRecvError),
+
+    #[error("failed to queue message into TCP stream: {0}")]
+    TcpStream(#[from] TcpStreamQueueOutgoingMessageError),
+
+    #[error("failed to queue message into UDP: {0}")]
+    Udp(#[from] UdpQueueOutgoingMessageError),
+}
+
+// ==========================================================================
+// Handle expired timers
+// ==========================================================================
+
+impl Handler {
+    pub fn handle_expired_timers(&mut self) -> Result<(), HandleTimersError> {
         Ok(())
     }
 
     pub fn next_timeout(&mut self) -> Option<Duration> {
         None
     }
-}
-
-// ---- Errors ----
-
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum HandleEventError {
-    #[error("UDP event handling failed: {0}")]
-    UdpEventHandling(#[from] UdpHandleEventError),
-
-    #[error("TCP stream event handling failed: {0}")]
-    TcpStreamEventHandling(#[from] TcpStreamHandleEventError),
-
-    /// Can be creation or destruction of TCP stream handlers.
-    #[error("I/O error while handling event: {0}")]
-    Io(#[from] io::Error),
-}
-
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum HandleOutgoingMessagesError {
-    #[error("outgoing message receiving failed: {0}")]
-    OutgoingMessageReceiving(#[from] TryRecvError),
-
-    #[error("TCP stream message queueing failed: {0}")]
-    TcpStreamMessageQueueing(#[from] TcpStreamQueueMessageError),
-
-    #[error("UDP message queueing failed: {0}")]
-    UdpMessageQueueing(#[from] UdpQueueMessageError),
 }
 
 #[derive(Debug, Error)]

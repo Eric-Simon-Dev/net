@@ -13,11 +13,11 @@ use thiserror::Error;
 
 use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
 
-use super::IncomingMessage;
+use super::{IncomingMessage, OutgoingMessage};
 
 pub struct TcpStreamHandler {
     // ---- Socket ----
-    pub socket: TcpStream,
+    socket: TcpStream,
     current_interest: Event,
 
     // ---- Buffers ----
@@ -27,16 +27,16 @@ pub struct TcpStreamHandler {
 }
 
 impl TcpStreamHandler {
-    pub fn create(tcp_stream: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
+    pub fn create(socket: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
-        tcp_stream.set_nonblocking(true)?;
+        socket.set_nonblocking(true)?;
 
         // Set readable interest.
         let current_interest = Event::readable(key);
-        (unsafe { poller.add_with_mode(&tcp_stream, current_interest, PollMode::Level) })?;
+        (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
 
         Ok(Self {
-            socket: tcp_stream,
+            socket,
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
@@ -49,19 +49,24 @@ impl TcpStreamHandler {
         poller.delete(&self.socket)?;
         Ok(())
     }
+}
 
-    pub fn encode_frame_into_write_buf(
+// ==========================================================================
+// Queue outgoing message
+// ==========================================================================
+
+impl TcpStreamHandler {
+    pub fn queue_outgoing_message(
         &mut self,
         poller: &Poller,
-        payload: &[u8],
-        channel: u8,
-    ) -> Result<(), QueueMessageError> {
+        message: OutgoingMessage,
+    ) -> Result<(), QueueOutgoingMessageError> {
         // Create header.
-        let header = Header::new(payload.len(), channel)?;
+        let header = Header::new(message.data.len(), message.channel)?;
 
         // Buffer and queue frame.
         header.put_into(&mut self.write_buf);
-        self.write_buf.put(payload);
+        self.write_buf.put(message.data);
         let frame = self.write_buf.split().freeze();
         self.frames_queue.push_front(frame);
 
@@ -73,7 +78,23 @@ impl TcpStreamHandler {
 
         Ok(())
     }
+}
 
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum QueueOutgoingMessageError {
+    #[error("failed to create frame header: {0}")]
+    Header(#[from] HeaderCreateError),
+
+    #[error("failed to update poller interest: {0}")]
+    PollerInterest(#[from] io::Error),
+}
+
+// ==========================================================================
+// Handle event
+// ==========================================================================
+
+impl TcpStreamHandler {
     pub fn handle_event(
         &mut self,
         poller: &Poller,
@@ -150,32 +171,18 @@ impl TcpStreamHandler {
     }
 }
 
-// ---- Errors ----
-
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum QueueMessageError {
-    #[error("frame header creation failed: {0}")]
-    FrameHeaderCreation(#[from] HeaderCreateError),
-
-    /// Poller interest update.
-    #[error("I/O error while queueing message: {0}")]
-    Io(#[from] io::Error),
-}
-
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum HandleEventError {
     #[error("client closed connection")]
     ConnectionClosed,
 
-    #[error("frame header decoding failed: {0}")]
-    FrameHeaderDecoding(#[from] HeaderDecodeError),
+    #[error("failed to decode frame header: {0}")]
+    Header(#[from] HeaderDecodeError),
 
-    #[error("incoming message sending failed: {0}")]
-    IncomingMessageSending(#[from] SendError<IncomingMessage>),
+    #[error("failed to send message into channel: {0}")]
+    Channel(#[from] SendError<IncomingMessage>),
 
-    /// Can be socket read, socket write or poller interest update.
-    #[error("I/O error while handling event: {0}")]
+    #[error("failed to read/write socket or update poller interest: {0}")]
     Io(#[from] io::Error),
 }

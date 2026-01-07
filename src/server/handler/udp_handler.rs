@@ -15,11 +15,11 @@ use thiserror::Error;
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
-use super::IncomingMessage;
+use super::{IncomingMessage, OutgoingMessage};
 
 use client::ClientRegistry;
 
-pub struct UdpSocketHandler {
+pub struct UdpHandler {
     // ---- Clients ----
     pub clients: ClientRegistry,
 
@@ -38,51 +38,55 @@ struct AddressedDatagram {
     key: usize,
 }
 
-impl UdpSocketHandler {
-    pub fn new(udp_socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
+impl UdpHandler {
+    pub fn new(socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
-        udp_socket.set_nonblocking(true)?;
+        socket.set_nonblocking(true)?;
 
         // Set readable interest.
         let current_interest = Event::readable(key);
-        (unsafe { poller.add_with_mode(&udp_socket, current_interest, PollMode::Level) })?;
+        (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
 
         Ok(Self {
             clients: ClientRegistry::new(),
-            socket: udp_socket,
+            socket,
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
             datagrams_queue: VecDeque::new(),
         })
     }
+}
 
-    pub fn encode_datagram_into_write_buf(
+// ==========================================================================
+// Queue outgoing message
+// ==========================================================================
+
+impl UdpHandler {
+    pub fn queue_outgoing_message(
         &mut self,
         poller: &Poller,
-        payload: &[u8],
-        channel: u8,
-        client_key: usize,
-    ) -> Result<(), QueueMessageError> {
+        message: OutgoingMessage,
+    ) -> Result<(), QueueOutgoingMessageError> {
         // Get client or drop.
-        let Some(client) = self.clients.get_mut_by_key(client_key) else {
+        let Some(client) = self.clients.get_mut_by_key(message.client_key) else {
             return Ok(());
         };
 
         // Create header.
         let header = Header::Classic {
-            channel,
+            channel: message.channel,
             seq: client.send_seq,
         };
         client.send_seq += 1;
 
         // Buffer and queue datagram.
         header.put_into(&mut self.write_buf);
-        self.write_buf.put(payload);
+        self.write_buf.put(message.data);
         let datagram = self.write_buf.split().freeze();
         self.datagrams_queue.push_front(AddressedDatagram {
             datagram,
-            key: client_key,
+            key: message.client_key,
         });
 
         // Set writable interest.
@@ -93,7 +97,20 @@ impl UdpSocketHandler {
 
         Ok(())
     }
+}
 
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum QueueOutgoingMessageError {
+    #[error("failed to update poller interest: {0}")]
+    PollerInterest(#[from] io::Error),
+}
+
+// ==========================================================================
+// Handle event
+// ==========================================================================
+
+impl UdpHandler {
     pub fn handle_event(
         &mut self,
         poller: &Poller,
@@ -182,23 +199,12 @@ impl UdpSocketHandler {
     }
 }
 
-// ---- Errors ----
-
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum QueueMessageError {
-    /// Poller interest update.
-    #[error("I/O error while queueing message: {0}")]
-    Io(#[from] io::Error),
-}
-
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum HandleEventError {
-    #[error("incoming message sending failed: {0}")]
-    IncomingMessageSending(#[from] SendError<IncomingMessage>),
+    #[error("failed to send message into channel: {0}")]
+    Channel(#[from] SendError<IncomingMessage>),
 
-    /// Can be socket read, socket write or poller interest update.
-    #[error("I/O error while handling event: {0}")]
+    #[error("failed to read/write socket or update poller interest: {0}")]
     Io(#[from] io::Error),
 }

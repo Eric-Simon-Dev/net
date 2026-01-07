@@ -11,29 +11,27 @@ use std::{
 };
 
 use bytes::BytesMut;
-use polling::{Events, Poller};
+use polling::Poller;
 
-use handler::{HandleEventError, HandleOutgoingMessagesError, HandleTimersError, Handler};
+use handler::{HandleEventsError, HandleOutgoingMessagesError, HandleTimersError, Handler};
 
 pub fn listen(
     local_addr: SocketAddr,
 ) -> io::Result<(Sender<OutgoingMessage>, Receiver<IncomingMessage>, Waker)> {
-    // Create IO = sockets + poller.
-    let tcp_listener = TcpListener::bind(local_addr)?;
-    let udp_socket = UdpSocket::bind(local_addr)?;
+    // Create i/o.
+    let tcp = TcpListener::bind(local_addr)?;
+    let udp = UdpSocket::bind(local_addr)?;
     let poller = Arc::new(Poller::new()?);
-    let events = Events::new();
 
-    // Create communication = channels + waker.
+    // Create communication.
     let incoming = mpsc::channel();
     let outgoing = mpsc::channel();
     let waker = Waker(poller.clone());
 
     // Create handler.
-    let handler = Handler::new(tcp_listener, udp_socket, &poller, incoming.0, outgoing.1)?;
+    let handler = Handler::new(tcp, udp, &poller, incoming.0, outgoing.1)?;
 
-    // Spawn reactor.
-    reactor::spawn(poller, events, handler);
+    reactor::start(poller, handler);
 
     Ok((outgoing.0, incoming.1, waker))
 }
@@ -70,7 +68,7 @@ pub enum Guarantees {
 pub struct Waker(Arc<Poller>);
 
 impl Waker {
-    pub fn wake(&self) -> io::Result<()> {
+    pub fn process_available_operations(&self) -> io::Result<()> {
         self.0.notify()
     }
 }
