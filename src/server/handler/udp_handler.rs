@@ -61,7 +61,6 @@ impl UdpHandler {
     /// # Preconditions
     ///
     /// `message.client_key` is a registered client.
-    /// Client management is Handler responsibility.
     pub fn queue_outgoing_message(
         &mut self,
         poller: &Poller,
@@ -125,7 +124,7 @@ impl UdpHandler {
         Ok(())
     }
 
-    /// Filter out unregistered clients.
+    /// Drop datagrams from unregistered clients.
     fn next_datagram(&mut self) -> io::Result<Option<(BytesMut, usize)>> {
         let mut buf = [0; MAX_PACKET_SIZE];
         loop {
@@ -151,7 +150,6 @@ impl UdpHandler {
     /// # Preconditions
     ///
     /// `key` is a registered client.
-    /// Filtering out unregistered clients is next_datagram responsibility.
     fn validate_datagram(&mut self, mut datagram: BytesMut, key: usize) -> Option<IncomingMessage> {
         let client = &mut self.clients[key];
 

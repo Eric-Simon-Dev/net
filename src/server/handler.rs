@@ -13,6 +13,8 @@ use polling::{Event, Events, Poller};
 use slab::Slab;
 use thiserror::Error;
 
+use crate::protocol::udp;
+
 use super::{Guarantees, IncomingMessage, OutgoingMessage};
 
 use tcp_handler::{NextConnectionError as TcpNextConnectionError, TcpHandler};
@@ -111,13 +113,23 @@ impl Handler {
         Ok(())
     }
 
+    /// Drop messages to unregistered clients.
     fn next_outgoing_message(
         &mut self,
     ) -> Result<Option<OutgoingMessage>, HandleOutgoingMessagesError> {
-        match self.outgoing.try_recv() {
-            Ok(message) => Ok(Some(message)),
-            Err(TryRecvError::Empty) => Ok(None),
-            Err(e) => Err(e.into()),
+        loop {
+            let message = match self.outgoing.try_recv() {
+                Ok(message) => message,
+                Err(TryRecvError::Empty) => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+
+            // Drop if unregistered.
+            if !self.is_client(message.client_key) {
+                continue;
+            }
+
+            return Ok(Some(message));
         }
     }
 
@@ -126,21 +138,15 @@ impl Handler {
         poller: &Poller,
         message: OutgoingMessage,
     ) -> Result<(), HandleOutgoingMessagesError> {
-        // Drop messages to unregistered clients.
-        if !self.is_client(message.client_key) {
-            return Ok(());
-        }
-
-        match message.guarantees {
-            Guarantees::None => {
+        match (message.guarantees, message.data.len()) {
+            (Guarantees::None, len) if len <= udp::MAX_PACKET_SIZE => {
                 self.udp.queue_outgoing_message(poller, message)?;
             }
-            Guarantees::Delivery | Guarantees::DeliveryOrder => {
+            _ => {
                 let tcp_stream = &mut self.tcp_streams[message.client_key];
                 tcp_stream.queue_outgoing_message(poller, message)?;
             }
         }
-
         Ok(())
     }
 }

@@ -36,8 +36,6 @@ fn run_event_loop(poller: Arc<Poller>, mut handler: Handler) -> Result<(), React
     }
 }
 
-// ---- Errors ----
-
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ReactorError {

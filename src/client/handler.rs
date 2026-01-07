@@ -11,6 +11,8 @@ use std::{
 use polling::{Event, Events, Poller};
 use thiserror::Error;
 
+use crate::protocol::udp;
+
 use super::{Guarantees, IncomingMessage, OutgoingMessage};
 
 use tcp_stream_handler::{
@@ -84,11 +86,11 @@ impl Handler {
         poller: &Poller,
         message: OutgoingMessage,
     ) -> Result<(), HandleOutgoingMessagesError> {
-        match message.guarantees {
-            Guarantees::None => {
+        match (message.guarantees, message.data.len()) {
+            (Guarantees::None, len) if len <= udp::MAX_PACKET_SIZE => {
                 self.udp.queue_outgoing_message(poller, message)?;
             }
-            Guarantees::Delivery | Guarantees::DeliveryOrder => {
+            _ => {
                 self.tcp_stream.queue_outgoing_message(poller, message)?;
             }
         }
