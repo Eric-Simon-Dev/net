@@ -64,6 +64,10 @@ impl Handler {
 // ==========================================================================
 
 impl Handler {
+    fn is_client(&self, key: usize) -> bool {
+        self.tcp_streams.contains(key)
+    }
+
     fn add_client(
         &mut self,
         poller: &Poller,
@@ -75,7 +79,7 @@ impl Handler {
         entry.insert(tcp_stream);
 
         // Add a new client entry in UDP handler.
-        self.udp.clients.add_client(addr);
+        self.udp.clients.add(addr);
 
         Ok(())
     }
@@ -86,10 +90,72 @@ impl Handler {
         tcp_stream.destroy(poller)?;
 
         // Remove from UDP handler client registry.
-        self.udp.clients.remove_client(key);
+        self.udp.clients.remove(key);
 
         Ok(())
     }
+}
+
+// ==========================================================================
+// Handle available outgoing messages
+// ==========================================================================
+
+impl Handler {
+    pub fn handle_available_outgoing_messages(
+        &mut self,
+        poller: &Poller,
+    ) -> Result<(), HandleOutgoingMessagesError> {
+        while let Some(message) = self.next_outgoing_message()? {
+            self.handle_outgoing_message(poller, message)?;
+        }
+        Ok(())
+    }
+
+    fn next_outgoing_message(
+        &mut self,
+    ) -> Result<Option<OutgoingMessage>, HandleOutgoingMessagesError> {
+        match self.outgoing.try_recv() {
+            Ok(message) => Ok(Some(message)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn handle_outgoing_message(
+        &mut self,
+        poller: &Poller,
+        message: OutgoingMessage,
+    ) -> Result<(), HandleOutgoingMessagesError> {
+        // Drop messages to unregistered clients.
+        if !self.is_client(message.client_key) {
+            return Ok(());
+        }
+
+        match message.guarantees {
+            Guarantees::None => {
+                self.udp.queue_outgoing_message(poller, message)?;
+            }
+            Guarantees::Delivery | Guarantees::DeliveryOrder => {
+                let tcp_stream = &mut self.tcp_streams[message.client_key];
+                tcp_stream.queue_outgoing_message(poller, message)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum HandleOutgoingMessagesError {
+    #[error("failed to receive message from channel: {0}")]
+    Channel(#[from] TryRecvError),
+
+    #[error("failed to queue message into TCP stream: {0}")]
+    TcpStream(#[from] TcpStreamQueueOutgoingMessageError),
+
+    #[error("failed to queue message into UDP: {0}")]
+    Udp(#[from] UdpQueueOutgoingMessageError),
 }
 
 // ==========================================================================
@@ -159,63 +225,6 @@ pub enum HandleEventsError {
 
     #[error("failed to add/remove client: {0}")]
     ClientManagement(#[from] io::Error),
-}
-
-// ==========================================================================
-// Handle available outgoing messages
-// ==========================================================================
-
-impl Handler {
-    pub fn handle_available_outgoing_messages(
-        &mut self,
-        poller: &Poller,
-    ) -> Result<(), HandleOutgoingMessagesError> {
-        while let Some(message) = self.next_outgoing_message()? {
-            self.handle_outgoing_message(poller, message)?;
-        }
-        Ok(())
-    }
-
-    fn next_outgoing_message(
-        &mut self,
-    ) -> Result<Option<OutgoingMessage>, HandleOutgoingMessagesError> {
-        match self.outgoing.try_recv() {
-            Ok(message) => Ok(Some(message)),
-            Err(TryRecvError::Empty) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn handle_outgoing_message(
-        &mut self,
-        poller: &Poller,
-        message: OutgoingMessage,
-    ) -> Result<(), HandleOutgoingMessagesError> {
-        match message.guarantees {
-            Guarantees::None => {
-                self.udp.queue_outgoing_message(poller, message)?;
-            }
-            Guarantees::Delivery | Guarantees::DeliveryOrder => {
-                if let Some(tcp_stream) = self.tcp_streams.get_mut(message.client_key) {
-                    tcp_stream.queue_outgoing_message(poller, message)?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum HandleOutgoingMessagesError {
-    #[error("failed to receive message from channel: {0}")]
-    Channel(#[from] TryRecvError),
-
-    #[error("failed to queue message into TCP stream: {0}")]
-    TcpStream(#[from] TcpStreamQueueOutgoingMessageError),
-
-    #[error("failed to queue message into UDP: {0}")]
-    Udp(#[from] UdpQueueOutgoingMessageError),
 }
 
 // ==========================================================================

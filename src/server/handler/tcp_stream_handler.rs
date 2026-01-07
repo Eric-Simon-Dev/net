@@ -23,7 +23,7 @@ pub struct TcpStreamHandler {
     // ---- Buffers ----
     read_buf: BytesMut,
     write_buf: BytesMut,
-    frames_queue: VecDeque<Bytes>,
+    write_queue: VecDeque<Bytes>,
 }
 
 impl TcpStreamHandler {
@@ -40,12 +40,12 @@ impl TcpStreamHandler {
             current_interest,
             read_buf: BytesMut::new(),
             write_buf: BytesMut::new(),
-            frames_queue: VecDeque::new(),
+            write_queue: VecDeque::new(),
         })
     }
 
     pub fn destroy(self, poller: &Poller) -> io::Result<()> {
-        self.socket.shutdown(Shutdown::Both)?;
+        let _ = self.socket.shutdown(Shutdown::Both);
         poller.delete(&self.socket)?;
         Ok(())
     }
@@ -64,11 +64,13 @@ impl TcpStreamHandler {
         // Create header.
         let header = Header::new(message.data.len(), message.channel)?;
 
-        // Buffer and queue frame.
+        // Buffer frame.
         header.put_into(&mut self.write_buf);
         self.write_buf.put(message.data);
         let frame = self.write_buf.split().freeze();
-        self.frames_queue.push_front(frame);
+
+        // Queue frame.
+        self.write_queue.push_front(frame);
 
         // Set writable interest.
         if !self.current_interest.writable {
@@ -102,22 +104,18 @@ impl TcpStreamHandler {
         incoming: &mut Sender<IncomingMessage>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            self.drain_socket_into_read_buf()?;
-            while let Some((header, payload)) = self.decode_next_frame_from_read_buf()? {
-                incoming.send(IncomingMessage {
-                    data: payload,
-                    channel: header.channel,
-                    client_key: event.key,
-                })?;
+            self.receive_frame_segments()?;
+            while let Some(message) = self.next_message(event.key)? {
+                incoming.send(message)?;
             }
         }
         if event.writable {
-            self.fill_socket_from_write_buf(poller)?;
+            self.send_frame_segments(poller)?;
         }
         Ok(())
     }
 
-    fn drain_socket_into_read_buf(&mut self) -> Result<(), HandleEventError> {
+    fn receive_frame_segments(&mut self) -> Result<(), HandleEventError> {
         let mut buf = [0; 4096];
         loop {
             match self.socket.read(&mut buf) {
@@ -129,35 +127,41 @@ impl TcpStreamHandler {
         }
     }
 
-    fn decode_next_frame_from_read_buf(
-        &mut self,
-    ) -> Result<Option<(Header, BytesMut)>, HandleEventError> {
-        match Header::split_frame_from(&mut self.read_buf) {
-            Ok(frame) => Ok(Some(frame)),
-            Err(HeaderDecodeError::BufferTooSmall) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+    /// Fail if invalid (cannot just drop since the whole stream will be impossible to parse).
+    fn next_message(&mut self, key: usize) -> Result<Option<IncomingMessage>, HandleEventError> {
+        let (header, payload) = match Header::split_frame_from(&mut self.read_buf) {
+            Ok(frame) => frame,
+            Err(HeaderDecodeError::BufferTooSmall) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+
+        Ok(Some(IncomingMessage {
+            data: payload,
+            channel: header.channel,
+            client_key: key,
+        }))
     }
 
-    fn fill_socket_from_write_buf(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(mut frame) = self.frames_queue.pop_back() {
+    fn send_frame_segments(&mut self, poller: &Poller) -> io::Result<()> {
+        while let Some(mut frame) = self.write_queue.pop_back() {
             match self.socket.write(&frame) {
-                // Partial write: Remove written bytes and push back into queue.
+                // Partial send.
                 Ok(n) if n < frame.len() => {
+                    // Remove sent segment from frame.
                     let _ = frame.split_to(n);
-                    self.frames_queue.push_back(frame);
+                    self.write_queue.push_back(frame);
                 }
 
-                // Complete write.
+                // Complete send.
                 Ok(_) => (),
 
-                // Socket full: Push back into queue and return without error.
+                // Socket full.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.frames_queue.push_back(frame);
+                    self.write_queue.push_back(frame);
                     return Ok(());
                 }
 
-                // Fatal error.
+                // Error.
                 Err(e) => return Err(e),
             }
         }

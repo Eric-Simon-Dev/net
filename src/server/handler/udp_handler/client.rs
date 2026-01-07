@@ -1,18 +1,22 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    ops::{Index, IndexMut},
+};
 
 use slab::Slab;
 
 use crate::protocol::udp::SlidingWindow;
 
-pub struct ClientRegistry {
-    clients: Slab<Client>,
-    addr_to_key: HashMap<SocketAddr, usize>,
-}
-
 pub struct Client {
     pub addr: SocketAddr,
     pub send_seq: u64,
     pub recv_seq_window: SlidingWindow,
+}
+
+pub struct ClientRegistry {
+    clients: Slab<Client>,
+    addr_to_key: HashMap<SocketAddr, usize>,
 }
 
 impl ClientRegistry {
@@ -23,28 +27,44 @@ impl ClientRegistry {
         }
     }
 
-    pub fn add_client(&mut self, addr: SocketAddr) -> usize {
-        let key = self.clients.insert(Client {
+    pub fn add(&mut self, addr: SocketAddr) -> usize {
+        // Create client.
+        let client = Client {
             addr,
             send_seq: 0,
             recv_seq_window: SlidingWindow::new(),
-        });
+        };
+
+        // Update registry.
+        let key = self.clients.insert(client);
         self.addr_to_key.insert(addr, key);
+
         key
     }
 
-    pub fn remove_client(&mut self, key: usize) -> Option<Client> {
+    pub fn remove(&mut self, key: usize) -> Client {
+        // Update registry.
         let client = self.clients.remove(key);
         self.addr_to_key.remove(&client.addr);
-        Some(client)
+
+        client
     }
 
-    pub fn get_mut_by_key(&mut self, key: usize) -> Option<&mut Client> {
-        self.clients.get_mut(key)
+    pub fn get_key(&self, addr: &SocketAddr) -> Option<usize> {
+        self.addr_to_key.get(addr).copied()
     }
+}
 
-    pub fn get_mut_by_addr(&mut self, addr: SocketAddr) -> Option<&mut Client> {
-        let key = self.addr_to_key.get(&addr).copied()?;
-        self.clients.get_mut(key)
+impl Index<usize> for ClientRegistry {
+    type Output = Client;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.clients[index]
+    }
+}
+
+impl IndexMut<usize> for ClientRegistry {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.clients.get_mut(index).expect("invalid client key")
     }
 }
