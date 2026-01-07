@@ -104,7 +104,7 @@ fn run_client(client_addr: SocketAddr, server_addr: SocketAddr, guarantees: clie
         guarantees,
     };
     outgoing.send(msg).unwrap();
-    waker.wake().unwrap();
+    waker.process_available_operations().unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
@@ -116,6 +116,6 @@ fn run_client(client_addr: SocketAddr, server_addr: SocketAddr, guarantees: clie
             guarantees,
         };
         outgoing.send(msg).unwrap();
-        waker.wake().unwrap();
+        waker.process_available_operations().unwrap();
     }
 }

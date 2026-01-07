@@ -3,7 +3,7 @@ use std::{io, sync::Arc, thread};
 use polling::{Events, Poller};
 use thiserror::Error;
 
-use super::{HandleEventsError, HandleOutgoingMessagesError, HandleTimersError, Handler};
+use super::handler::{HandleEventsError, HandleOutgoingMessagesError, HandleTimersError, Handler};
 
 pub fn start(poller: Arc<Poller>, handler: Handler) {
     thread::spawn(move || {

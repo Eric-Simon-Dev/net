@@ -1,9 +1,9 @@
-//! Frame = header + payload.
+//! Datagram = header + payload.
 
 use std::{
     collections::VecDeque,
-    io::{self, Read, Write},
-    net::TcpStream,
+    io,
+    net::UdpSocket,
     sync::mpsc::{SendError, Sender},
 };
 
@@ -11,13 +11,16 @@ use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 use thiserror::Error;
 
-use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
+use crate::protocol::udp::{Header, MAX_PACKET_SIZE, SlidingWindow};
 
 use super::{IncomingMessage, OutgoingMessage};
 
-pub struct TcpStreamHandler {
+pub struct UdpHandler {
+    send_seq: u64,
+    recv_seq_window: SlidingWindow,
+
     // ---- Socket ----
-    socket: TcpStream,
+    socket: UdpSocket,
     current_interest: Event,
 
     // ---- Buffers ----
@@ -26,8 +29,8 @@ pub struct TcpStreamHandler {
     write_queue: VecDeque<Bytes>,
 }
 
-impl TcpStreamHandler {
-    pub fn new(socket: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
+impl UdpHandler {
+    pub fn new(socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
         socket.set_nonblocking(true)?;
 
@@ -36,6 +39,8 @@ impl TcpStreamHandler {
         (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
 
         Ok(Self {
+            send_seq: 0,
+            recv_seq_window: SlidingWindow::new(),
             socket,
             current_interest,
             read_buf: BytesMut::new(),
@@ -49,22 +54,26 @@ impl TcpStreamHandler {
 // Queue outgoing message
 // ==========================================================================
 
-impl TcpStreamHandler {
+impl UdpHandler {
     pub fn queue_outgoing_message(
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
     ) -> Result<(), QueueOutgoingMessageError> {
         // Create header.
-        let header = Header::new(message.data.len(), message.channel)?;
+        let header = Header::Classic {
+            channel: message.channel,
+            seq: self.send_seq,
+        };
+        self.send_seq += 1;
 
-        // Buffer frame.
+        // Buffer datagram.
         header.put_into(&mut self.write_buf);
         self.write_buf.put(message.data);
-        let frame = self.write_buf.split().freeze();
+        let datagram = self.write_buf.split().freeze();
 
-        // Queue frame.
-        self.write_queue.push_front(frame);
+        // Queue datagram.
+        self.write_queue.push_front(datagram);
 
         // Set writable interest.
         if !self.current_interest.writable {
@@ -79,9 +88,6 @@ impl TcpStreamHandler {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum QueueOutgoingMessageError {
-    #[error("failed to create frame header: {0}")]
-    Header(#[from] HeaderCreateError),
-
     #[error("failed to update poller interest: {0}")]
     PollerInterest(#[from] io::Error),
 }
@@ -90,7 +96,7 @@ pub enum QueueOutgoingMessageError {
 // Handle event
 // ==========================================================================
 
-impl TcpStreamHandler {
+impl UdpHandler {
     pub fn handle_event(
         &mut self,
         poller: &Poller,
@@ -98,59 +104,63 @@ impl TcpStreamHandler {
         incoming: &mut Sender<IncomingMessage>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            self.receive_frame_segments()?;
-            while let Some(message) = self.next_message()? {
-                incoming.send(message)?;
+            while let Some(datagram) = self.next_datagram()? {
+                if let Some(message) = self.validate_datagram(datagram) {
+                    incoming.send(message)?;
+                }
             }
         }
         if event.writable {
-            self.send_frame_segments(poller)?;
+            self.send_datagrams(poller)?;
         }
         Ok(())
     }
 
-    fn receive_frame_segments(&mut self) -> Result<(), HandleEventError> {
-        let mut buf = [0; 4096];
+    fn next_datagram(&mut self) -> io::Result<Option<BytesMut>> {
+        let mut buf = [0; MAX_PACKET_SIZE];
         loop {
-            match self.socket.read(&mut buf) {
-                Ok(0) => return Err(HandleEventError::ConnectionClosed),
-                Ok(n) => self.read_buf.put(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(e) => return Err(e.into()),
-            }
+            let n = match self.socket.recv(&mut buf) {
+                Ok(recv) => recv,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+                Err(e) => return Err(e),
+            };
+
+            // Buffer datagram.
+            self.read_buf.put(&buf[..n]);
+            let datagram = self.read_buf.split();
+
+            return Ok(Some(datagram));
         }
     }
 
-    /// Fail if invalid (cannot just drop since the whole stream will be impossible to parse).
-    fn next_message(&mut self) -> Result<Option<IncomingMessage>, HandleEventError> {
-        let (header, payload) = match Header::split_frame_from(&mut self.read_buf) {
-            Ok(frame) => frame,
-            Err(HeaderDecodeError::BufferTooSmall) => return Ok(None),
-            Err(e) => return Err(e.into()),
+    fn validate_datagram(&mut self, mut datagram: BytesMut) -> Option<IncomingMessage> {
+        // Parse header or drop.
+        let header = match Header::split_from(&mut datagram) {
+            Ok(header) => header,
+            Err(_) => return None,
         };
+        let payload = datagram;
 
-        Ok(Some(IncomingMessage {
+        // Validate seq or drop.
+        if !self.recv_seq_window.check_and_mark(header.seq()) {
+            return None;
+        }
+
+        Some(IncomingMessage {
             data: payload,
-            channel: header.channel,
-        }))
+            channel: header.channel(),
+        })
     }
 
-    fn send_frame_segments(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some(mut frame) = self.write_queue.pop_back() {
-            match self.socket.write(&frame) {
-                // Partial send.
-                Ok(n) if n < frame.len() => {
-                    // Remove sent segment from frame.
-                    let _ = frame.split_to(n);
-                    self.write_queue.push_back(frame);
-                }
-
-                // Complete send.
+    fn send_datagrams(&mut self, poller: &Poller) -> io::Result<()> {
+        while let Some(datagram) = self.write_queue.pop_back() {
+            match self.socket.send(&datagram) {
+                // Successfully send.
                 Ok(_) => (),
 
                 // Socket full.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.write_queue.push_back(frame);
+                    self.write_queue.push_back(datagram);
                     return Ok(());
                 }
 
@@ -158,7 +168,7 @@ impl TcpStreamHandler {
                 Err(e) => return Err(e),
             }
         }
-        // Exiting loop => All queued frames have been sent.
+        // Exiting loop => All queued datagrams have been sent.
 
         // Remove writable interest.
         self.current_interest.writable = false;
@@ -171,12 +181,6 @@ impl TcpStreamHandler {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum HandleEventError {
-    #[error("client closed connection")]
-    ConnectionClosed,
-
-    #[error("failed to decode frame header: {0}")]
-    Header(#[from] HeaderDecodeError),
-
     #[error("failed to send message into channel: {0}")]
     Channel(#[from] SendError<IncomingMessage>),
 
