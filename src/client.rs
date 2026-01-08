@@ -3,7 +3,7 @@ mod reactor;
 
 use std::{
     io,
-    net::{SocketAddr, TcpStream, UdpSocket},
+    net::{TcpStream, ToSocketAddrs, UdpSocket},
     sync::{
         Arc,
         mpsc::{self, Receiver, Sender},
@@ -16,13 +16,13 @@ use polling::Poller;
 use handler::Handler;
 
 pub fn connect(
-    local_addr: SocketAddr,
-    server_addr: SocketAddr,
+    local_addr: impl ToSocketAddrs,
+    server_addr: impl ToSocketAddrs,
 ) -> io::Result<(Sender<OutgoingMessage>, Receiver<IncomingMessage>, Waker)> {
     // Create i/o.
-    let tcp_stream = TcpStream::connect(server_addr)?;
-    let udp = UdpSocket::bind(local_addr)?;
-    udp.connect(server_addr)?;
+    let tcp_stream = TcpStream::connect(&server_addr)?;
+    let udp = UdpSocket::bind(&local_addr)?;
+    udp.connect(&server_addr)?;
     let poller = Arc::new(Poller::new()?);
 
     // Create communication.

@@ -1,8 +1,4 @@
-use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    thread,
-    time::Duration,
-};
+use std::{net::ToSocketAddrs, thread, time::Duration};
 
 use bytes::BytesMut;
 
@@ -11,8 +7,8 @@ use crate::{client, server};
 #[test]
 fn connection() {
     // ---- Addresses ----
-    let server_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12012).into();
-    let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12013).into();
+    let server_addr = "0:12012";
+    let client_addr = "0:0";
 
     let (_, _, _) = server::listen(server_addr).unwrap();
     let (_, _, _) = client::connect(client_addr, server_addr).unwrap();
@@ -25,8 +21,8 @@ fn connection() {
 #[test]
 fn multiple_exchanges_no_guarantees() {
     // ---- Addresses ----
-    let server_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12014).into();
-    let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12015).into();
+    let server_addr = "0:12013";
+    let client_addr = "0:0";
 
     // Spawn server first.
     thread::spawn(move || {
@@ -50,8 +46,8 @@ fn multiple_exchanges_no_guarantees() {
 #[test]
 fn multiple_exchanges_delivery_guarantee() {
     // ---- Addresses ----
-    let server_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12016).into();
-    let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 12017).into();
+    let server_addr = "0:12014";
+    let client_addr = "0:0";
 
     // Spawn server first.
     thread::spawn(move || {
@@ -68,7 +64,7 @@ fn multiple_exchanges_delivery_guarantee() {
     });
 }
 
-fn run_server(server_addr: SocketAddr, guarantees: server::Guarantees) {
+fn run_server(server_addr: impl ToSocketAddrs, guarantees: server::Guarantees) {
     use server::{OutgoingMessage, listen};
 
     let (outgoing, incoming, waker) = listen(server_addr).unwrap();
@@ -92,7 +88,11 @@ fn run_server(server_addr: SocketAddr, guarantees: server::Guarantees) {
     assert_eq!(msg.data[0], 32);
 }
 
-fn run_client(client_addr: SocketAddr, server_addr: SocketAddr, guarantees: client::Guarantees) {
+fn run_client(
+    client_addr: impl ToSocketAddrs,
+    server_addr: impl ToSocketAddrs,
+    guarantees: client::Guarantees,
+) {
     use client::{OutgoingMessage, connect};
 
     let (outgoing, incoming, waker) = connect(client_addr, server_addr).unwrap();
