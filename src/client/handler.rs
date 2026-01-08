@@ -141,7 +141,8 @@ impl Handler {
         poller: &Poller,
         event: Event,
     ) -> Result<(), HandleEventsError> {
-        self.tcp_stream.handle_event(poller, event, &mut self.incoming)?;
+        self.tcp_stream
+            .handle_event(poller, event, &mut self.incoming)?;
         Ok(())
     }
 }
