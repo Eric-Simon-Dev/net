@@ -2,15 +2,13 @@ mod handler;
 mod reactor;
 
 use std::{
-    io,
-    net::{TcpListener, ToSocketAddrs, UdpSocket},
-    sync::{
+    io, net::{SocketAddr, TcpListener, ToSocketAddrs, UdpSocket}, str::FromStr, sync::{
         Arc,
         mpsc::{self, Receiver, Sender},
-    },
+    }
 };
 
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use polling::Poller;
 
 use handler::Handler;
@@ -45,6 +43,12 @@ pub struct IncomingMessage {
     pub client_key: usize,
 }
 
+impl IncomingMessage {
+    pub fn is_notification(&self) -> Option<Notification> {
+        Notification::decode_from(self)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OutgoingMessage {
     pub data: BytesMut,
@@ -70,5 +74,79 @@ pub struct Waker(Arc<Poller>);
 impl Waker {
     pub fn process_available_operations(&self) -> io::Result<()> {
         self.0.notify()
+    }
+}
+
+// ---- Notification ----
+
+const CLIENT_CONNECTED: usize = usize::MAX;
+const CLIENT_DISCONNECTED: usize = usize::MAX - 1;
+
+pub enum Notification {
+    ClientConnected { key: usize, addr: SocketAddr },
+    ClientDisconnected { key: usize, addr: SocketAddr },
+}
+
+impl Notification {
+    pub fn encode_as_message(&self) -> IncomingMessage {
+        let mut message = IncomingMessage {
+            data: BytesMut::new(),
+            channel: 0,
+            client_key: 0,
+        };
+        match *self {
+            Notification::ClientConnected { key, addr } => {
+                // Encode variant.
+                message.client_key = CLIENT_CONNECTED;
+
+                // Endode `key`.
+                message.data.put(&key.to_ne_bytes()[..]);
+
+                // Encode `addr`.
+                message.data.put(addr.to_string().as_bytes());
+            },
+            Notification::ClientDisconnected { key, addr } => {
+                // Encode variant.
+                message.client_key = CLIENT_DISCONNECTED;
+
+                // Endode `key`.
+                message.data.put(&key.to_ne_bytes()[..]);
+
+                // Encode `addr`.
+                message.data.put(addr.to_string().as_bytes());
+            },
+        }
+        message
+    }
+
+    pub fn decode_from(message: &IncomingMessage) -> Option<Self> {
+        // Decode variant.
+        match message.client_key {
+            CLIENT_CONNECTED => {
+                // Decode `key`.
+                let key_bytes = message.data[..size_of::<usize>()].try_into().unwrap();
+                let key = usize::from_ne_bytes(key_bytes);
+
+                // Decode `addr`.
+                let addr_bytes = &message.data[size_of::<usize>()..];
+                let addr_str = std::str::from_utf8(addr_bytes).unwrap();
+                let addr = SocketAddr::from_str(addr_str).unwrap();
+                
+                Some(Notification::ClientConnected { key, addr })
+            },
+            CLIENT_DISCONNECTED => {
+                // Decode `key`.
+                let key_bytes = message.data[..size_of::<usize>()].try_into().unwrap();
+                let key = usize::from_ne_bytes(key_bytes);
+
+                // Decode `addr`.
+                let addr_bytes = &message.data[size_of::<usize>()..];
+                let addr_str = std::str::from_utf8(addr_bytes).unwrap();
+                let addr = SocketAddr::from_str(addr_str).unwrap();
+                
+                Some(Notification::ClientDisconnected { key, addr })
+            },
+            _ => None,
+        }
     }
 }

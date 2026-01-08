@@ -5,7 +5,7 @@ mod udp_handler;
 use std::{
     io,
     net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
-    sync::mpsc::{Receiver, Sender, TryRecvError},
+    sync::mpsc::{Receiver, SendError, Sender, TryRecvError},
     time::Duration,
 };
 
@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::protocol::udp;
 
-use super::{Guarantees, IncomingMessage, OutgoingMessage};
+use super::{Guarantees, IncomingMessage, OutgoingMessage, Notification};
 
 use tcp_handler::{NextConnectionError as TcpNextConnectionError, TcpHandler};
 use tcp_stream_handler::{
@@ -74,28 +74,49 @@ impl Handler {
         &mut self,
         poller: &Poller,
         (tcp_stream, addr): (TcpStream, SocketAddr),
-    ) -> io::Result<()> {
+    ) -> Result<(), ClientManagementError> {
         // Add a new TCP stream handler.
         let entry = self.tcp_streams.vacant_entry();
-        let tcp_stream = TcpStreamHandler::create(tcp_stream, poller, entry.key())?;
+        let tcp_stream_key = entry.key();
+        let tcp_stream = TcpStreamHandler::create(tcp_stream, poller, tcp_stream_key)?;
         entry.insert(tcp_stream);
 
         // Add a new client entry in UDP handler.
-        self.udp.clients.add(addr);
+        let udp_client_key = self.udp.clients.add(addr);
+
+        debug_assert_eq!(tcp_stream_key, udp_client_key);
+
+        // Send notification.
+        let notification = Notification::ClientConnected { key: tcp_stream_key, addr };
+        self.incoming.send(notification.encode_as_message())?;
 
         Ok(())
     }
 
-    fn remove_client(&mut self, poller: &Poller, key: usize) -> io::Result<()> {
+    fn remove_client(&mut self, poller: &Poller, key: usize) -> Result<(), ClientManagementError> {
         // Remove from TCP streams handlers.
         let tcp_stream = self.tcp_streams.remove(key);
         tcp_stream.destroy(poller)?;
 
         // Remove from UDP handler client registry.
-        self.udp.clients.remove(key);
+        let client = self.udp.clients.remove(key);
+
+        // Send notification.
+        let notification = Notification::ClientDisconnected { key, addr: client.addr };
+        self.incoming.send(notification.encode_as_message())?;
 
         Ok(())
     }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ClientManagementError {
+    #[error("failed to create/destroy TCP stream handler: {0}")]
+    TcpStream(#[from] io::Error),
+
+    #[error("failed to send notification message into channel: {0}")]
+    Channel(#[from] SendError<IncomingMessage>),
 }
 
 // ==========================================================================
@@ -230,7 +251,7 @@ pub enum HandleEventsError {
     TcpStream(#[from] TcpStreamHandleEventError),
 
     #[error("failed to add/remove client: {0}")]
-    ClientManagement(#[from] io::Error),
+    ClientManagement(#[from] ClientManagementError),
 }
 
 // ==========================================================================
