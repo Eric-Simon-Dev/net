@@ -76,7 +76,7 @@ fn run_server(server_addr: impl ToSocketAddrs, guarantees: server::Guarantees) {
         let msg = OutgoingMessage {
             data: msg.data,
             channel: msg.channel,
-            client_key: msg.client_key,
+            client_id: msg.client_id,
             guarantees,
         };
         outgoing.send(msg).unwrap();

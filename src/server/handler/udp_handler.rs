@@ -66,7 +66,7 @@ impl UdpHandler {
         poller: &Poller,
         message: OutgoingMessage,
     ) -> Result<(), QueueOutgoingMessageError> {
-        let client = &mut self.clients[message.client_key];
+        let client = &mut self.clients[message.client_id];
 
         // Create header.
         let header = Header::Classic {
@@ -168,7 +168,7 @@ impl UdpHandler {
         Some(IncomingMessage {
             data: payload,
             channel: header.channel(),
-            client_key: key,
+            client_id: key,
         })
     }
 

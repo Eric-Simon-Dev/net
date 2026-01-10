@@ -70,6 +70,8 @@ impl Handler {
         self.tcp_streams.contains(key)
     }
 
+    /// client entry key and TCP sream key should always be equal (since used by the poller).
+    /// Should be okay since client is always added to both slabs.
     fn add_client(
         &mut self,
         poller: &Poller,
@@ -77,19 +79,16 @@ impl Handler {
     ) -> Result<(), ClientManagementError> {
         // Add a new TCP stream handler.
         let entry = self.tcp_streams.vacant_entry();
-        let tcp_stream_key = entry.key();
-        let tcp_stream = TcpStreamHandler::create(tcp_stream, poller, tcp_stream_key)?;
+        let tcp_stream = TcpStreamHandler::create(tcp_stream, poller, entry.key())?;
         entry.insert(tcp_stream);
 
         // Add a new client entry in UDP handler.
-        let udp_client_key = self.udp.clients.add(addr);
-
-        debug_assert_eq!(tcp_stream_key, udp_client_key);
+        let key = self.udp.clients.add(addr);
 
         // Send notification.
         let notification = Notification::ClientConnected {
             addr,
-            key: tcp_stream_key,
+            client_id: key,
         };
         self.incoming.send(notification.encode_as_message())?;
 
@@ -105,7 +104,7 @@ impl Handler {
         self.udp.clients.remove(key);
 
         // Send notification.
-        let notification = Notification::ClientDisconnected { key };
+        let notification = Notification::ClientDisconnected { client_id: key };
         self.incoming.send(notification.encode_as_message())?;
 
         Ok(())
@@ -149,7 +148,7 @@ impl Handler {
             };
 
             // Drop if unregistered.
-            if !self.is_client(message.client_key) {
+            if !self.is_client(message.client_id) {
                 continue;
             }
 
@@ -167,7 +166,7 @@ impl Handler {
                 self.udp.queue_outgoing_message(poller, message)?;
             }
             _ => {
-                let tcp_stream = &mut self.tcp_streams[message.client_key];
+                let tcp_stream = &mut self.tcp_streams[message.client_id];
                 tcp_stream.queue_outgoing_message(poller, message)?;
             }
         }

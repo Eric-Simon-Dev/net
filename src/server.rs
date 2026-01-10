@@ -39,11 +39,11 @@ pub fn listen(
 
 // ---- Messages ----
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IncomingMessage {
+    pub client_id: usize,
     pub data: BytesMut,
     pub channel: u8,
-    pub client_key: usize,
 }
 
 impl IncomingMessage {
@@ -54,9 +54,9 @@ impl IncomingMessage {
 
 #[derive(Debug, Clone)]
 pub struct OutgoingMessage {
+    pub client_id: usize,
     pub data: BytesMut,
     pub channel: u8,
-    pub client_key: usize,
     pub guarantees: Guarantees,
 }
 
@@ -82,38 +82,41 @@ impl Waker {
 
 // ---- Notification ----
 
+/// `Notification` is encoded into and transmitted via `IncomingMessage`.
+///
+/// `client_id` field is used to separate normal messages from notifications.
+/// We set it to special constants never attributed to actual clients.
+///
+/// The notification data is then encoded into `data` field.
+pub enum Notification {
+    ClientConnected { addr: SocketAddr, client_id: usize },
+    ClientDisconnected { client_id: usize },
+}
+
+// ---- Notification constants ----
 const CLIENT_CONNECTED: usize = usize::MAX;
 const CLIENT_DISCONNECTED: usize = usize::MAX - 1;
 
-pub enum Notification {
-    ClientConnected { addr: SocketAddr, key: usize },
-    ClientDisconnected { key: usize },
-}
-
 impl Notification {
     pub fn encode_as_message(&self) -> IncomingMessage {
-        let mut message = IncomingMessage {
-            data: BytesMut::new(),
-            channel: 0,
-            client_key: 0,
-        };
+        let mut message = IncomingMessage::default();
         match *self {
-            Notification::ClientConnected { addr, key } => {
+            Notification::ClientConnected { addr, client_id } => {
                 // Encode variant.
-                message.client_key = CLIENT_CONNECTED;
+                message.client_id = CLIENT_CONNECTED;
 
-                // Endode `key`.
-                message.data.put(&key.to_ne_bytes()[..]);
+                // Endode `client_id`.
+                message.data.put(&client_id.to_ne_bytes()[..]);
 
                 // Encode `addr`.
                 message.data.put(addr.to_string().as_bytes());
             }
-            Notification::ClientDisconnected { key } => {
+            Notification::ClientDisconnected { client_id } => {
                 // Encode variant.
-                message.client_key = CLIENT_DISCONNECTED;
+                message.client_id = CLIENT_DISCONNECTED;
 
-                // Endode `key`.
-                message.data.put(&key.to_ne_bytes()[..]);
+                // Endode `client_id`.
+                message.data.put(&client_id.to_ne_bytes()[..]);
             }
         }
         message
@@ -121,25 +124,25 @@ impl Notification {
 
     pub fn decode_from(message: &IncomingMessage) -> Option<Self> {
         // Decode variant.
-        match message.client_key {
+        match message.client_id {
             CLIENT_CONNECTED => {
-                // Decode `key`.
-                let key_bytes = message.data[..size_of::<usize>()].try_into().unwrap();
-                let key = usize::from_ne_bytes(key_bytes);
+                // Decode `client_id`.
+                let client_id_bytes = message.data[..size_of::<usize>()].try_into().unwrap();
+                let client_id = usize::from_ne_bytes(client_id_bytes);
 
                 // Decode `addr`.
                 let addr_bytes = &message.data[size_of::<usize>()..];
                 let addr_str = std::str::from_utf8(addr_bytes).unwrap();
                 let addr = SocketAddr::from_str(addr_str).unwrap();
 
-                Some(Notification::ClientConnected { addr, key })
+                Some(Notification::ClientConnected { addr, client_id })
             }
             CLIENT_DISCONNECTED => {
-                // Decode `key`.
-                let key_bytes = message.data[..size_of::<usize>()].try_into().unwrap();
-                let key = usize::from_ne_bytes(key_bytes);
+                // Decode `client_id`.
+                let client_id_bytes = message.data[..size_of::<usize>()].try_into().unwrap();
+                let client_id = usize::from_ne_bytes(client_id_bytes);
 
-                Some(Notification::ClientDisconnected { key })
+                Some(Notification::ClientDisconnected { client_id })
             }
             _ => None,
         }

@@ -138,7 +138,7 @@ impl TcpStreamHandler {
         Ok(Some(IncomingMessage {
             data: payload,
             channel: header.channel,
-            client_key: key,
+            client_id: key,
         }))
     }
 

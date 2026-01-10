@@ -118,7 +118,7 @@ impl UdpHandler {
 
     fn next_datagram(&mut self) -> io::Result<Option<BytesMut>> {
         let mut buf = [0; MAX_PACKET_SIZE];
-        
+
         let n = match self.socket.recv(&mut buf) {
             Ok(recv) => recv,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
