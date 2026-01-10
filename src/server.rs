@@ -2,10 +2,13 @@ mod handler;
 mod reactor;
 
 use std::{
-    io, net::{SocketAddr, TcpListener, ToSocketAddrs, UdpSocket}, str::FromStr, sync::{
+    io,
+    net::{SocketAddr, TcpListener, ToSocketAddrs, UdpSocket},
+    str::FromStr,
+    sync::{
         Arc,
         mpsc::{self, Receiver, Sender},
-    }
+    },
 };
 
 use bytes::{BufMut, BytesMut};
@@ -83,8 +86,8 @@ const CLIENT_CONNECTED: usize = usize::MAX;
 const CLIENT_DISCONNECTED: usize = usize::MAX - 1;
 
 pub enum Notification {
-    ClientConnected { key: usize, addr: SocketAddr },
-    ClientDisconnected { key: usize, addr: SocketAddr },
+    ClientConnected { addr: SocketAddr, key: usize },
+    ClientDisconnected { key: usize },
 }
 
 impl Notification {
@@ -95,7 +98,7 @@ impl Notification {
             client_key: 0,
         };
         match *self {
-            Notification::ClientConnected { key, addr } => {
+            Notification::ClientConnected { addr, key } => {
                 // Encode variant.
                 message.client_key = CLIENT_CONNECTED;
 
@@ -104,17 +107,14 @@ impl Notification {
 
                 // Encode `addr`.
                 message.data.put(addr.to_string().as_bytes());
-            },
-            Notification::ClientDisconnected { key, addr } => {
+            }
+            Notification::ClientDisconnected { key } => {
                 // Encode variant.
                 message.client_key = CLIENT_DISCONNECTED;
 
                 // Endode `key`.
                 message.data.put(&key.to_ne_bytes()[..]);
-
-                // Encode `addr`.
-                message.data.put(addr.to_string().as_bytes());
-            },
+            }
         }
         message
     }
@@ -131,21 +131,16 @@ impl Notification {
                 let addr_bytes = &message.data[size_of::<usize>()..];
                 let addr_str = std::str::from_utf8(addr_bytes).unwrap();
                 let addr = SocketAddr::from_str(addr_str).unwrap();
-                
-                Some(Notification::ClientConnected { key, addr })
-            },
+
+                Some(Notification::ClientConnected { addr, key })
+            }
             CLIENT_DISCONNECTED => {
                 // Decode `key`.
                 let key_bytes = message.data[..size_of::<usize>()].try_into().unwrap();
                 let key = usize::from_ne_bytes(key_bytes);
 
-                // Decode `addr`.
-                let addr_bytes = &message.data[size_of::<usize>()..];
-                let addr_str = std::str::from_utf8(addr_bytes).unwrap();
-                let addr = SocketAddr::from_str(addr_str).unwrap();
-                
-                Some(Notification::ClientDisconnected { key, addr })
-            },
+                Some(Notification::ClientDisconnected { key })
+            }
             _ => None,
         }
     }

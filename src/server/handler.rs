@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::protocol::udp;
 
-use super::{Guarantees, IncomingMessage, OutgoingMessage, Notification};
+use super::{Guarantees, IncomingMessage, Notification, OutgoingMessage};
 
 use tcp_handler::{NextConnectionError as TcpNextConnectionError, TcpHandler};
 use tcp_stream_handler::{
@@ -87,7 +87,10 @@ impl Handler {
         debug_assert_eq!(tcp_stream_key, udp_client_key);
 
         // Send notification.
-        let notification = Notification::ClientConnected { key: tcp_stream_key, addr };
+        let notification = Notification::ClientConnected {
+            addr,
+            key: tcp_stream_key,
+        };
         self.incoming.send(notification.encode_as_message())?;
 
         Ok(())
@@ -99,10 +102,10 @@ impl Handler {
         tcp_stream.destroy(poller)?;
 
         // Remove from UDP handler client registry.
-        let client = self.udp.clients.remove(key);
+        self.udp.clients.remove(key);
 
         // Send notification.
-        let notification = Notification::ClientDisconnected { key, addr: client.addr };
+        let notification = Notification::ClientDisconnected { key };
         self.incoming.send(notification.encode_as_message())?;
 
         Ok(())

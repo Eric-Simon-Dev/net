@@ -118,19 +118,18 @@ impl UdpHandler {
 
     fn next_datagram(&mut self) -> io::Result<Option<BytesMut>> {
         let mut buf = [0; MAX_PACKET_SIZE];
-        loop {
-            let n = match self.socket.recv(&mut buf) {
-                Ok(recv) => recv,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
-                Err(e) => return Err(e),
-            };
+        
+        let n = match self.socket.recv(&mut buf) {
+            Ok(recv) => recv,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            Err(e) => return Err(e),
+        };
 
-            // Buffer datagram.
-            self.read_buf.put(&buf[..n]);
-            let datagram = self.read_buf.split();
+        // Buffer datagram.
+        self.read_buf.put(&buf[..n]);
+        let datagram = self.read_buf.split();
 
-            return Ok(Some(datagram));
-        }
+        Ok(Some(datagram))
     }
 
     fn validate_datagram(&mut self, mut datagram: BytesMut) -> Option<IncomingMessage> {
