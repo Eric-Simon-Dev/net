@@ -14,6 +14,8 @@ use std::{
 use bytes::{BufMut, BytesMut};
 use polling::Poller;
 
+pub use crate::protocol::MAX_PAYLOAD_LENGTH;
+
 use handler::Handler;
 
 pub fn listen(

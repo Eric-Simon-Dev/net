@@ -92,7 +92,7 @@ mod doc {
     //!
     //! # OSI: Session & Transport layers
     //!
-    //! - **Transport**: Guarantees (e.g., RUDP, ENet).  
+    //! - **Transport**: Guarantees (e.g., RUDP, ENet), Boundaries/Segmentation
     //! - **Session**: Continuity (authentication, reconnection, etc.).  
 }
 
@@ -100,8 +100,6 @@ pub mod client;
 pub mod server;
 
 mod protocol;
-
-pub use protocol::MAX_PAYLOAD_LENGTH;
 
 #[cfg(test)]
 mod tests;
