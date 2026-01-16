@@ -2,6 +2,8 @@
 //!
 //! Uses a **reactor** internally, running on a separate thread.
 //!
+//! Doesn't support mixing IPv4 and IPv6 sockets.
+//!
 //! ## API
 //!
 //! Client items are in [`client`] and server items in [`server`].
@@ -21,17 +23,18 @@
 //! const SERVER_ADDR: &'static str = "0:12012";
 //! const CLIENT_ADDR: &'static str = "0:0";
 //!
-//! /// Bind on `SERVER_ADDR` and wait for a single message.
+//! /// Bind to `SERVER_ADDR` and wait for a single message.
 //! fn server() {
 //!     use net::server::listen;
 //!
 //!     let (outgoing, incoming, waker) = listen(SERVER_ADDR).unwrap();
 //!
 //!     let msg = incoming.recv().unwrap();
+//!
 //!     assert_eq!(msg.data[0],0u8);
 //! }
 //!
-//! /// Bind on `CLIENT_ADDR`, connect to `SERVER_ADDR` and send a single message.
+//! /// Bind to `CLIENT_ADDR`, connect to `SERVER_ADDR` and send a single message.
 //! fn client() {
 //!     use net::client::{connect, OutgoingMessage, Guarantees};
 //!     use bytes::BytesMut;
@@ -60,9 +63,9 @@ mod doc {
     //!
     //! # TCP / UDP / RUDP
     //!
-    //! TCP and UDP protocols are our protocol primitives.
+    //! TCP and UDP protocols are our primitives.
     //!
-    //! RUDP is an overlay over UDP to implement some guarantees
+    //! RUDP is a protocol overlay over UDP to implement some guarantees
     //! without compromising latency as much as TCP.
     //!
     //! ## TCP/UDP Guarantees
