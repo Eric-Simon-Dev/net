@@ -4,16 +4,6 @@ use bytes::BytesMut;
 
 use crate::{client, server};
 
-#[test]
-fn connection() {
-    // ---- Addresses ----
-    let server_addr = "0:12012";
-    let client_addr = "0:0";
-
-    let (_, _, _) = server::listen(server_addr).unwrap();
-    let (_, _, _) = client::connect(client_addr, server_addr).unwrap();
-}
-
 /// Perform multiple message exchanges between a client and a server.
 ///
 /// The client and server run on separate threads and bounce a single-byte
