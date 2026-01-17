@@ -58,18 +58,21 @@ impl Handler {
         })
     }
 
-    pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestructionError> {
+    /// Will flush unsent messages before.
+    pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestroyError> {
+        // Destroy i/o primitive handlers.
         self.tcp_stream
             .destroy(poller)
-            .map_err(DestructionError::TcpStream)?;
-        self.udp.destroy(poller).map_err(DestructionError::Udp)?;
+            .map_err(DestroyError::TcpStream)?;
+        self.udp.destroy(poller).map_err(DestroyError::Udp)?;
+
         Ok(())
     }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum DestructionError {
+pub enum DestroyError {
     #[error("failed to destroy TCP stream: {0}")]
     TcpStream(io::Error),
 
@@ -78,11 +81,11 @@ pub enum DestructionError {
 }
 
 // ==========================================================================
-// Handle outgoing
+// Handle outgoings
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_outgoing(&mut self, poller: &Poller) -> Result<(), HandleOutgoingError> {
+    pub fn handle_outgoings(&mut self, poller: &Poller) -> Result<(), HandleOutgoingsError> {
         while let Some(outgoing) = self.next_outgoing()? {
             match outgoing {
                 Outgoing::Network(message) => {
@@ -96,10 +99,11 @@ impl Handler {
         Ok(())
     }
 
-    fn next_outgoing(&mut self) -> Result<Option<Outgoing>, HandleOutgoingError> {
+    fn next_outgoing(&mut self) -> Result<Option<Outgoing>, HandleOutgoingsError> {
         match self.outgoing.try_recv() {
             Ok(outgoing) => Ok(Some(outgoing)),
             Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) if self.shutdown => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -108,7 +112,7 @@ impl Handler {
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
-    ) -> Result<(), HandleOutgoingError> {
+    ) -> Result<(), HandleOutgoingsError> {
         match (message.guarantees, message.data.len()) {
             (Guarantees::None, len) if len <= udp::MAX_PACKET_SIZE => {
                 self.udp.queue_outgoing_message(poller, message)?;
@@ -122,16 +126,14 @@ impl Handler {
 
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::Shutdown => {
-                todo!("do shutdown logic");
-            }
+            Command::Shutdown => self.shutdown = true,
         }
     }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleOutgoingError {
+pub enum HandleOutgoingsError {
     #[error("failed to receive message from channel: {0}")]
     Channel(#[from] TryRecvError),
 
@@ -143,15 +145,15 @@ pub enum HandleOutgoingError {
 }
 
 // ==========================================================================
-// Handle events
+// Handle socket events
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_events(
+    pub fn handle_socket_events(
         &mut self,
         poller: &Poller,
         events: &Events,
-    ) -> Result<(), HandleEventsError> {
+    ) -> Result<(), HandleSocketEventsError> {
         for event in events.iter() {
             match event.key {
                 TCP_STREAM_KEY => self.handle_tcp_stream_event(poller, event)?,
@@ -162,7 +164,11 @@ impl Handler {
         Ok(())
     }
 
-    fn handle_udp_event(&mut self, poller: &Poller, event: Event) -> Result<(), HandleEventsError> {
+    fn handle_udp_event(
+        &mut self,
+        poller: &Poller,
+        event: Event,
+    ) -> Result<(), HandleSocketEventsError> {
         self.udp.handle_event(poller, event, &mut self.incoming)?;
         Ok(())
     }
@@ -171,7 +177,7 @@ impl Handler {
         &mut self,
         poller: &Poller,
         event: Event,
-    ) -> Result<(), HandleEventsError> {
+    ) -> Result<(), HandleSocketEventsError> {
         self.tcp_stream
             .handle_event(poller, event, &mut self.incoming)?;
         Ok(())
@@ -180,7 +186,7 @@ impl Handler {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleEventsError {
+pub enum HandleSocketEventsError {
     #[error("failed to handle UDP event: {0}")]
     Udp(#[from] UdpHandleEventError),
 
@@ -189,11 +195,11 @@ pub enum HandleEventsError {
 }
 
 // ==========================================================================
-// Handle expired timers
+// Next timeout & Handle timers
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_expired_timers(&mut self) -> Result<(), HandleTimersError> {
+    pub fn handle_timers(&mut self) -> Result<(), HandleTimersError> {
         Ok(())
     }
 

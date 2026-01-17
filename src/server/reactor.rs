@@ -5,33 +5,33 @@ use thiserror::Error;
 
 use super::handler::*;
 
-pub fn start(poller: Arc<Poller>, handler: Handler) {
-    thread::spawn(move || match run_event_loop(poller, handler) {
-        Ok(()) => println!("server reactor shutdown"),
-        Err(e) => eprintln!("server reactor crash: {e}"),
+pub fn spawn(poller: Arc<Poller>, handler: Handler) {
+    thread::spawn(move || match run(poller, handler) {
+        Ok(()) => println!("reactor shut down"),
+        Err(e) => eprintln!("reactor crashed: {e}"),
     });
 }
 
-fn run_event_loop(poller: Arc<Poller>, mut handler: Handler) -> Result<(), ReactorError> {
-    let mut events = Events::new();
+fn run(poller: Arc<Poller>, mut handler: Handler) -> Result<(), ReactorError> {
+    let mut socket_events = Events::new();
     while !handler.shutdown {
         // ---- Wait ----
 
         // Wait for either:
-        // - Poller events (sockets may be readable/writable).
-        // - Caller wake (messages may be available in outgoing).
+        // - Socket events (sockets may be readable/writable).
+        // - Caller wake (outgoings may be available).
         // - Timeout (timers may have expired).
         //
         // Can also *spuriously* wake.
 
-        events.clear();
-        poller.wait(&mut events, handler.next_timeout())?;
+        socket_events.clear();
+        poller.wait(&mut socket_events, handler.next_timeout())?;
 
         // ---- Handle ----
 
-        handler.handle_expired_timers()?;
-        handler.handle_outgoing(&poller)?;
-        handler.handle_events(&poller, &events)?;
+        handler.handle_timers()?;
+        handler.handle_outgoings(&poller)?;
+        handler.handle_socket_events(&poller, &socket_events)?;
     }
     handler.destroy(&poller)?;
     Ok(())
@@ -40,18 +40,20 @@ fn run_event_loop(poller: Arc<Poller>, mut handler: Handler) -> Result<(), React
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ReactorError {
-    #[error("failed to handle events: {0}")]
-    Events(#[from] HandleEventsError),
+    // ---- Handler ----
+    #[error("failed to handle socket events: {0}")]
+    HandleSocketEvents(#[from] HandleSocketEventsError),
 
-    #[error("failed to handle outgoing: {0}")]
-    Outgoing(#[from] HandleOutgoingError),
+    #[error("failed to handle outgoings: {0}")]
+    HandleOutgoings(#[from] HandleOutgoingsError),
 
     #[error("failed to handle timers: {0}")]
-    Timers(#[from] HandleTimersError),
-
-    #[error("failed to wait: {0}")]
-    Wait(#[from] io::Error),
+    HandleTimers(#[from] HandleTimersError),
 
     #[error("failed to destroy handler: {0}")]
-    Destruction(#[from] DestructionError),
+    DestroyHandler(#[from] DestroyError),
+
+    // ---- Poller ----
+    #[error("failed to wait on poller: {0}")]
+    WaitOnPoller(#[from] io::Error),
 }

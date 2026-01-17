@@ -44,9 +44,18 @@ impl TcpStreamHandler {
         })
     }
 
-    pub fn destroy(self, poller: &Poller) -> io::Result<()> {
+    pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        // Flush unsent messages.
+        while !self.write_queue.is_empty() {
+            self.send_frame_segments(poller)?;
+        }
+
+        // Shutdown (signal client).
         let _ = self.socket.shutdown(Shutdown::Both);
+
+        // Remove socket interest.
         poller.delete(&self.socket)?;
+
         Ok(())
     }
 }
@@ -104,9 +113,12 @@ impl TcpStreamHandler {
         incoming: &mut Sender<Incoming>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            self.receive_frame_segments()?;
+            let closed = self.receive_frame_segments()?;
             while let Some(message) = self.next_message(event.key)? {
-                incoming.send(message)?;
+                incoming.send(Incoming::Network(message))?;
+            }
+            if closed {
+                return Err(HandleEventError::ConnectionClosed);
             }
         }
         if event.writable {
@@ -115,31 +127,32 @@ impl TcpStreamHandler {
         Ok(())
     }
 
-    fn receive_frame_segments(&mut self) -> Result<(), HandleEventError> {
+    /// Return Ok(true) if connection closed.
+    fn receive_frame_segments(&mut self) -> Result<bool, HandleEventError> {
         let mut buf = [0; 4096];
         loop {
             match self.socket.read(&mut buf) {
-                Ok(0) => return Err(HandleEventError::ConnectionClosed),
+                Ok(0) => return Ok(true),
                 Ok(n) => self.read_buf.put(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                 Err(e) => return Err(e.into()),
             }
         }
     }
 
     /// Fail if invalid (cannot just drop since the whole stream will be impossible to parse).
-    fn next_message(&mut self, key: usize) -> Result<Option<Incoming>, HandleEventError> {
+    fn next_message(&mut self, key: usize) -> Result<Option<IncomingMessage>, HandleEventError> {
         let (header, payload) = match Header::split_frame_from(&mut self.read_buf) {
             Ok(frame) => frame,
             Err(HeaderDecodeError::BufferTooSmall) => return Ok(None),
             Err(e) => return Err(e.into()),
         };
 
-        Ok(Some(Incoming::Network(IncomingMessage {
+        Ok(Some(IncomingMessage {
             data: payload,
             channel: header.channel,
             client_id: key,
-        })))
+        }))
     }
 
     fn send_frame_segments(&mut self, poller: &Poller) -> io::Result<()> {

@@ -42,9 +42,9 @@ pub struct Handler {
     udp: UdpHandler,
     tcp_streams: Slab<TcpStreamHandler>,
 
-    // ---- Communication ----
-    incoming: Sender<Incoming>,
-    outgoing: Receiver<Outgoing>,
+    // ---- Interface ----
+    incomings: Sender<Incoming>,
+    outgoings: Receiver<Outgoing>,
 }
 
 impl Handler {
@@ -52,33 +52,38 @@ impl Handler {
         tcp: TcpListener,
         udp: UdpSocket,
         poller: &Poller,
-        incoming: Sender<Incoming>,
-        outgoing: Receiver<Outgoing>,
+        incomings: Sender<Incoming>,
+        outgoings: Receiver<Outgoing>,
     ) -> io::Result<Self> {
         Ok(Handler {
             shutdown: false,
             tcp: TcpHandler::create(tcp, poller, TCP_KEY)?,
             udp: UdpHandler::create(udp, poller, UDP_KEY)?,
             tcp_streams: Slab::new(),
-            incoming,
-            outgoing,
+            incomings,
+            outgoings,
         })
     }
 
-    pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestructionError> {
-        let tcp_stream_keys: Vec<_> = self.tcp_streams.iter().map(|(key, _)| key).collect();
-        for key in tcp_stream_keys {
+    /// Will flush unsent messages before.
+    pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestroyError> {
+        // Remove all clients.
+        let client_keys: Vec<usize> = self.tcp_streams.iter().map(|(key, _)| key).collect();
+        for key in client_keys {
             self.remove_client(poller, key)?;
         }
-        self.tcp.destroy(poller).map_err(DestructionError::Tcp)?;
-        self.udp.destroy(poller).map_err(DestructionError::Udp)?;
+
+        // Destroy i/o primitive handlers.
+        self.tcp.destroy(poller).map_err(DestroyError::Tcp)?;
+        self.udp.destroy(poller).map_err(DestroyError::Udp)?;
+
         Ok(())
     }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum DestructionError {
+pub enum DestroyError {
     #[error("failed to remove clients: {0}")]
     Clients(#[from] ClientManagementError),
 
@@ -114,7 +119,7 @@ impl Handler {
         let key = self.udp.clients.add(addr);
 
         // Send notification.
-        self.incoming
+        self.incomings
             .send(Incoming::Internal(Notification::Connection {
                 client_id: key,
                 addr,
@@ -125,14 +130,14 @@ impl Handler {
 
     fn remove_client(&mut self, poller: &Poller, key: usize) -> Result<(), ClientManagementError> {
         // Remove from TCP streams handlers.
-        let tcp_stream = self.tcp_streams.remove(key);
+        let mut tcp_stream = self.tcp_streams.remove(key);
         tcp_stream.destroy(poller)?;
 
         // Remove from UDP handler client registry.
         self.udp.clients.remove(key);
 
         // Send notification.
-        self.incoming
+        self.incomings
             .send(Incoming::Internal(Notification::Disconnection {
                 client_id: key,
             }))?;
@@ -152,11 +157,11 @@ pub enum ClientManagementError {
 }
 
 // ==========================================================================
-// Handle outgoing
+// Handle outgoings
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_outgoing(&mut self, poller: &Poller) -> Result<(), HandleOutgoingError> {
+    pub fn handle_outgoings(&mut self, poller: &Poller) -> Result<(), HandleOutgoingsError> {
         while let Some(outgoing) = self.next_outgoing()? {
             match outgoing {
                 Outgoing::Network(message) => {
@@ -170,10 +175,11 @@ impl Handler {
         Ok(())
     }
 
-    fn next_outgoing(&mut self) -> Result<Option<Outgoing>, HandleOutgoingError> {
-        match self.outgoing.try_recv() {
+    fn next_outgoing(&mut self) -> Result<Option<Outgoing>, HandleOutgoingsError> {
+        match self.outgoings.try_recv() {
             Ok(outgoing) => Ok(Some(outgoing)),
             Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) if self.shutdown => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -183,7 +189,7 @@ impl Handler {
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
-    ) -> Result<(), HandleOutgoingError> {
+    ) -> Result<(), HandleOutgoingsError> {
         if !self.is_client(message.client_id) {
             return Ok(());
         }
@@ -209,7 +215,7 @@ impl Handler {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleOutgoingError {
+pub enum HandleOutgoingsError {
     #[error("failed to receive message from channel: {0}")]
     Channel(#[from] TryRecvError),
 
@@ -221,15 +227,15 @@ pub enum HandleOutgoingError {
 }
 
 // ==========================================================================
-// Handle events
+// Handle socket events
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_events(
+    pub fn handle_socket_events(
         &mut self,
         poller: &Poller,
         events: &Events,
-    ) -> Result<(), HandleEventsError> {
+    ) -> Result<(), HandleSocketEventsError> {
         for event in events.iter() {
             match event.key {
                 TCP_KEY => self.handle_tcp_event(poller)?,
@@ -240,15 +246,19 @@ impl Handler {
         Ok(())
     }
 
-    fn handle_tcp_event(&mut self, poller: &Poller) -> Result<(), HandleEventsError> {
+    fn handle_tcp_event(&mut self, poller: &Poller) -> Result<(), HandleSocketEventsError> {
         while let Some(connection) = self.tcp.next_connection()? {
             self.add_client(poller, connection)?;
         }
         Ok(())
     }
 
-    fn handle_udp_event(&mut self, poller: &Poller, event: Event) -> Result<(), HandleEventsError> {
-        self.udp.handle_event(poller, event, &mut self.incoming)?;
+    fn handle_udp_event(
+        &mut self,
+        poller: &Poller,
+        event: Event,
+    ) -> Result<(), HandleSocketEventsError> {
+        self.udp.handle_event(poller, event, &mut self.incomings)?;
         Ok(())
     }
 
@@ -256,9 +266,9 @@ impl Handler {
         &mut self,
         poller: &Poller,
         event: Event,
-    ) -> Result<(), HandleEventsError> {
+    ) -> Result<(), HandleSocketEventsError> {
         if let Some(tcp_stream) = self.tcp_streams.get_mut(event.key) {
-            match tcp_stream.handle_event(poller, event, &mut self.incoming) {
+            match tcp_stream.handle_event(poller, event, &mut self.incomings) {
                 Ok(_) => (),
                 Err(
                     TcpStreamHandleEventError::ConnectionClosed
@@ -275,7 +285,7 @@ impl Handler {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleEventsError {
+pub enum HandleSocketEventsError {
     #[error("failed to handle TCP event: {0}")]
     Tcp(#[from] TcpNextConnectionError),
 
@@ -290,7 +300,7 @@ pub enum HandleEventsError {
 }
 
 // ==========================================================================
-// Next timeout & Handle expired timers
+// Next timeout & Handle timers
 // ==========================================================================
 
 impl Handler {
@@ -298,7 +308,7 @@ impl Handler {
         None
     }
 
-    pub fn handle_expired_timers(&mut self) -> Result<(), HandleTimersError> {
+    pub fn handle_timers(&mut self) -> Result<(), HandleTimersError> {
         Ok(())
     }
 }

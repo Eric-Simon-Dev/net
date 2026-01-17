@@ -45,8 +45,17 @@ impl TcpStreamHandler {
     }
 
     pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        // Flush unsent messages.
+        while !self.write_queue.is_empty() {
+            self.send_frame_segments(poller)?;
+        }
+
+        // Shutdown (signal client).
         let _ = self.socket.shutdown(Shutdown::Both);
+
+        // Remove socket interest.
         poller.delete(&self.socket)?;
+
         Ok(())
     }
 }
@@ -104,9 +113,12 @@ impl TcpStreamHandler {
         incoming: &mut Sender<Incoming>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
-            self.receive_frame_segments()?;
+            let closed = self.receive_frame_segments()?;
             while let Some(message) = self.next_message()? {
                 incoming.send(Incoming::Network(message))?;
+            }
+            if closed {
+                return Err(HandleEventError::ConnectionClosed);
             }
         }
         if event.writable {
@@ -115,13 +127,14 @@ impl TcpStreamHandler {
         Ok(())
     }
 
-    fn receive_frame_segments(&mut self) -> Result<(), HandleEventError> {
+    /// Return Ok(true) if connection closed.
+    fn receive_frame_segments(&mut self) -> Result<bool, HandleEventError> {
         let mut buf = [0; 4096];
         loop {
             match self.socket.read(&mut buf) {
-                Ok(0) => return Err(HandleEventError::ConnectionClosed),
+                Ok(0) => return Ok(true),
                 Ok(n) => self.read_buf.put(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                 Err(e) => return Err(e.into()),
             }
         }

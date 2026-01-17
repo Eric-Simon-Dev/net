@@ -73,7 +73,7 @@ fn run_server(server_addr: impl ToSocketAddrs, guarantees: server::Guarantees) {
                 guarantees,
             }))
             .unwrap();
-        waker.notify_reactor().unwrap();
+        waker.wake_reactor().unwrap();
     }
 
     // Final receive: ensure the expected value is reached.
@@ -100,7 +100,7 @@ fn run_client(
             guarantees,
         }))
         .unwrap();
-    waker.notify_reactor().unwrap();
+    waker.wake_reactor().unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
@@ -113,6 +113,6 @@ fn run_client(
                 guarantees,
             }))
             .unwrap();
-        waker.notify_reactor().unwrap();
+        waker.wake_reactor().unwrap();
     }
 }

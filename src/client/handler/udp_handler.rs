@@ -50,7 +50,14 @@ impl UdpHandler {
     }
 
     pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        // Flush unsent messages.
+        while !self.write_queue.is_empty() {
+            self.send_datagrams(poller)?;
+        }
+
+        // Remove socket interest.
         poller.delete(&self.socket)?;
+
         Ok(())
     }
 }

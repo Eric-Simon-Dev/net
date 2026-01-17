@@ -25,27 +25,35 @@ pub fn connect(
     local_addr: impl ToSocketAddrs,
     server_addr: impl ToSocketAddrs,
 ) -> io::Result<(Sender<Outgoing>, Receiver<Incoming>, Waker)> {
-    // Create i/o primitives.
+    // ---- Setup ----
+
+    // Create:
+    // - I/O primitives.
+    // - Interface.
+    // - Handler (setup I/O behavior and initialize state).
+
     let tcp_stream = TcpStream::connect(&server_addr)?;
     let udp = UdpSocket::bind(&local_addr)?;
     udp.connect(&server_addr)?;
     let poller = Arc::new(Poller::new()?);
 
-    // Create communication.
-    let incoming = mpsc::channel();
-    let outgoing = mpsc::channel();
+    let incomings = mpsc::channel();
+    let outgoings = mpsc::channel();
     let waker = Waker(poller.clone());
 
-    // Create handler.
-    let handler = Handler::create(tcp_stream, udp, &poller, incoming.0, outgoing.1)?;
+    let handler = Handler::create(tcp_stream, udp, &poller, incomings.0, outgoings.1)?;
 
-    reactor::start(poller, handler);
+    // ---- Run ----
 
-    Ok((outgoing.0, incoming.1, waker))
+    reactor::spawn(poller, handler);
+
+    // ----
+
+    Ok((outgoings.0, incomings.1, waker))
 }
 
 // ===================================================================================
-// Communication
+// Interface
 // ===================================================================================
 
 // ---- Incoming ----
@@ -56,11 +64,15 @@ pub enum Incoming {
     Internal(Notification),
 }
 
+// -- Message --
+
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
     pub data: BytesMut,
     pub channel: u8,
 }
+
+// -- Notification --
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -73,6 +85,8 @@ pub enum Outgoing {
     Network(OutgoingMessage),
     Internal(Command),
 }
+
+// -- Message --
 
 #[derive(Debug, Clone)]
 pub struct OutgoingMessage {
@@ -88,6 +102,8 @@ pub enum Guarantees {
     DeliveryOrder,
 }
 
+// -- Command --
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Command {
@@ -99,7 +115,7 @@ pub enum Command {
 pub struct Waker(Arc<Poller>);
 
 impl Waker {
-    pub fn notify_reactor(&self) -> io::Result<()> {
+    pub fn wake_reactor(&self) -> io::Result<()> {
         self.0.notify()
     }
 }
