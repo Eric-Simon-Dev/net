@@ -1,21 +1,7 @@
-//! Simple OSI transport layer for client/server.
+//! Transport interface for client/server.
 //!
-//! Uses a **reactor** internally, running on a separate thread.
-//!
-//! Doesn't support mixing IPv4 and IPv6 sockets.
-//!
-//! ## API
-//!
-//! Client items are in [`client`] and server items in [`server`].
-//!
-//! Messages exposes:
-//! - A channel byte for multiplexing.
-//! - [`bytes::BytesMut`] for data.
-//! - Guarantees (outgoing only):
-//!     - None.
-//!     - Delivery.
-//!     - OrderDelivery (relative to channel).
-//! - client ID (server only).
+//! - Doesn't support mixing IPv4 and IPv6 sockets.
+//! - Exposes [`bytes::BytesMut`] for data management.
 //!
 //! ## Example
 //!
@@ -23,54 +9,68 @@
 //! const SERVER_ADDR: &'static str = "0:12012";
 //! const CLIENT_ADDR: &'static str = "0:0";
 //!
-//! /// Bind to `SERVER_ADDR` and wait for a single message.
+//! /// - Bind to `SERVER_ADDR`.
+//! /// - Wait for a hello message.
 //! fn server() {
-//!     use net::server::listen;
+//!     use net::server::{listen, Incoming, Notification};
 //!
 //!     let (outgoing, incoming, waker) = listen(SERVER_ADDR).unwrap();
 //!
-//!     let msg = incoming.recv().unwrap();
+//!     // Receive a connection notification first.
+//!     let recv = incoming.recv().unwrap();
+//!     assert!(matches!(recv, Incoming::Notification(Notification::Connection { .. })));
 //!
-//!     assert_eq!(msg.data[0],0u8);
+//!     // Receive a message second.
+//!     let recv = incoming.recv().unwrap();
+//!     assert!(matches!(recv, Incoming::Message(_)));
+//!
+//!     // Does it contains "hello" ?
+//!     let Incoming::Message(message) = recv else {
+//!         unreachable!("pattern checked earlier");
+//!     };
+//!     assert_eq!(message.data[..], "hello".as_bytes()[..]);
 //! }
 //!
-//! /// Bind to `CLIENT_ADDR`, connect to `SERVER_ADDR` and send a single message.
+//! /// - Bind to `CLIENT_ADDR` & Connect to `SERVER_ADDR`.
+//! /// - Send a hello message.
 //! fn client() {
-//!     use net::client::{connect, OutgoingMessage, Guarantees};
+//!     use net::client::{connect, OutgoingMessage, Outgoing, Guarantees};
 //!     use bytes::BytesMut;
 //!
 //!     let (outgoing, incoming, waker) = connect(CLIENT_ADDR, SERVER_ADDR).unwrap();
 //!
-//!     let msg = OutgoingMessage {
-//!         data: BytesMut::zeroed(1), // Send a single `0` byte.
+//!     outgoing.send(Outgoing::Message(OutgoingMessage {
+//!         data: BytesMut::from("hello".as_bytes()),
 //!         channel: 0,
 //!         guarantees : Guarantees::Delivery,
-//!     };
-//!     outgoing.send(msg).unwrap();
-//!     waker.process_available_operations().unwrap();
+//!     })).unwrap();
+//!     waker.notify_reactor().unwrap();
+//!
+//!     // Message will be queued but not sent if client terminates before socket ready.
+//!     std::thread::sleep(std::time::Duration::from_millis(100));
 //! }
 //!
-//! # use std::{thread, time::Duration};
-//! #
-//! # thread::spawn(server);
-//! # // Give server time to start so client connection succeeds.
-//! # thread::sleep(Duration::from_millis(100));
-//! # thread::spawn(client);
+//! # std::thread::scope(|s| {
+//! #     std::thread::Builder::new().name("server".to_string()).spawn_scoped(s, server);
+//! #     // Give server time to start so client connection succeeds.
+//! #     std::thread::sleep(std::time::Duration::from_millis(100));
+//! #     std::thread::Builder::new().name("client".to_string()).spawn_scoped(s, client);
+//! # });
 //! ```
 
 mod doc {
-    //! Memos
+    //! # Memos
     //!
-    //! # TCP / UDP / RUDP
+    //! ## TCP / UDP / RUDP
     //!
     //! TCP and UDP protocols are our primitives.
     //!
-    //! RUDP is a protocol overlay over UDP to implement some guarantees
-    //! without compromising latency as much as TCP.
+    //! RUDP (Reliable UDP) is a protocol overlay over UDP
+    //! to have more guarantees without compromising performance as much as TCP.
     //!
-    //! ## TCP/UDP Guarantees
+    //! ## TCP / UDP Guarantees
     //!
-    //! **Integrity** is guaranteed by both TCP and UDP.
+    //! **Integrity** is guaranteed by both.
     //!
     //! TCP guarantees:
     //! - **Deduplication**: Each message is received exactly once.
@@ -84,19 +84,19 @@ mod doc {
     //! - **Boundaries**: Messages are not merged or split.
     //!
     //! UDP does *not* guarantee:
-    //! - **Deduplication**: Messages may be duplicated.
-    //! - **Delivery**: No acknowledgment; fire and forget.
+    //! - **Deduplication**: Duplicated messages may be received.
+    //! - **Delivery**: No acknowledgment of delivery for sender (fire-and-forget).
     //! - **Order**: Messages may arrive out of order.
     //!
-    //! # IPv4 & IPv6
+    //! ## IPv4 & IPv6
     //!
     //! - **Dual-stack socket**: Handles both IP versions, but not always available.
     //! - **Separate sockets per version**: Most common approach.
     //!
-    //! # OSI: Session & Transport layers
+    //! ## OSI: Session & Transport layers
     //!
-    //! - **Transport**: Guarantees (e.g., RUDP, ENet), Boundaries/Segmentation
-    //! - **Session**: Continuity (authentication, reconnection, etc.).  
+    //! - **Transport**: Transport guarantees, segmentation, encryption, etc.
+    //! - **Session**: Continuity of the exchanges (authentication, reconnection, etc.).  
 }
 
 pub mod client;

@@ -15,7 +15,9 @@ use thiserror::Error;
 
 use crate::protocol::udp;
 
-use super::{Guarantees, IncomingMessage, Notification, OutgoingMessage};
+use super::{
+    Command, Guarantees, Incoming, IncomingMessage, Notification, Outgoing, OutgoingMessage,
+};
 
 use tcp_handler::{NextConnectionError as TcpNextConnectionError, TcpHandler};
 use tcp_stream_handler::{
@@ -39,8 +41,8 @@ pub struct Handler {
     tcp_streams: Slab<TcpStreamHandler>,
 
     // ---- Communication ----
-    incoming: Sender<IncomingMessage>,
-    outgoing: Receiver<OutgoingMessage>,
+    incoming: Sender<Incoming>,
+    outgoing: Receiver<Outgoing>,
 }
 
 impl Handler {
@@ -48,8 +50,8 @@ impl Handler {
         tcp: TcpListener,
         udp: UdpSocket,
         poller: &Poller,
-        incoming: Sender<IncomingMessage>,
-        outgoing: Receiver<OutgoingMessage>,
+        incoming: Sender<Incoming>,
+        outgoing: Receiver<Outgoing>,
     ) -> io::Result<Self> {
         Ok(Handler {
             tcp: TcpHandler::new(tcp, poller, TCP_KEY)?,
@@ -86,11 +88,11 @@ impl Handler {
         let key = self.udp.clients.add(addr);
 
         // Send notification.
-        let notification = Notification::ClientConnected {
-            addr,
-            client_id: key,
-        };
-        self.incoming.send(notification.encode_as_message())?;
+        self.incoming
+            .send(Incoming::Notification(Notification::Connection {
+                client_id: key,
+                addr,
+            }))?;
 
         Ok(())
     }
@@ -104,8 +106,10 @@ impl Handler {
         self.udp.clients.remove(key);
 
         // Send notification.
-        let notification = Notification::ClientDisconnected { client_id: key };
-        self.incoming.send(notification.encode_as_message())?;
+        self.incoming
+            .send(Incoming::Notification(Notification::Disconnection {
+                client_id: key,
+            }))?;
 
         Ok(())
     }
@@ -118,49 +122,46 @@ pub enum ClientManagementError {
     TcpStream(#[from] io::Error),
 
     #[error("failed to send notification message into channel: {0}")]
-    Channel(#[from] SendError<IncomingMessage>),
+    Channel(#[from] SendError<Incoming>),
 }
 
 // ==========================================================================
-// Handle available outgoing messages
+// Handle outgoing
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_available_outgoing_messages(
-        &mut self,
-        poller: &Poller,
-    ) -> Result<(), HandleOutgoingMessagesError> {
-        while let Some(message) = self.next_outgoing_message()? {
-            self.handle_outgoing_message(poller, message)?;
+    pub fn handle_outgoing(&mut self, poller: &Poller) -> Result<(), HandleOutgoingError> {
+        while let Some(outgoing) = self.next_outgoing()? {
+            match outgoing {
+                Outgoing::Message(message) => {
+                    self.handle_outgoing_message(poller, message)?;
+                }
+                Outgoing::Command(command) => {
+                    self.handle_command(command);
+                }
+            }
         }
         Ok(())
     }
 
-    /// Drop messages to unregistered clients.
-    fn next_outgoing_message(
-        &mut self,
-    ) -> Result<Option<OutgoingMessage>, HandleOutgoingMessagesError> {
-        loop {
-            let message = match self.outgoing.try_recv() {
-                Ok(message) => message,
-                Err(TryRecvError::Empty) => return Ok(None),
-                Err(e) => return Err(e.into()),
-            };
-
-            // Drop if unregistered.
-            if !self.is_client(message.client_id) {
-                continue;
-            }
-
-            return Ok(Some(message));
+    fn next_outgoing(&mut self) -> Result<Option<Outgoing>, HandleOutgoingError> {
+        match self.outgoing.try_recv() {
+            Ok(outgoing) => Ok(Some(outgoing)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(e) => Err(e.into()),
         }
     }
 
+    /// Drop messages to unregistered clients.
     fn handle_outgoing_message(
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
-    ) -> Result<(), HandleOutgoingMessagesError> {
+    ) -> Result<(), HandleOutgoingError> {
+        if !self.is_client(message.client_id) {
+            return Ok(());
+        }
+
         match (message.guarantees, message.data.len()) {
             (Guarantees::None, len) if len <= udp::MAX_PACKET_SIZE => {
                 self.udp.queue_outgoing_message(poller, message)?;
@@ -172,11 +173,19 @@ impl Handler {
         }
         Ok(())
     }
+
+    fn handle_command(&mut self, command: Command) {
+        match command {
+            Command::Shutdown => {
+                todo!("do shutdown logic");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleOutgoingMessagesError {
+pub enum HandleOutgoingError {
     #[error("failed to receive message from channel: {0}")]
     Channel(#[from] TryRecvError),
 
@@ -257,16 +266,16 @@ pub enum HandleEventsError {
 }
 
 // ==========================================================================
-// Handle expired timers
+// Next timeout & Handle expired timers
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_expired_timers(&mut self) -> Result<(), HandleTimersError> {
-        Ok(())
-    }
-
     pub fn next_timeout(&mut self) -> Option<Duration> {
         None
+    }
+
+    pub fn handle_expired_timers(&mut self) -> Result<(), HandleTimersError> {
+        Ok(())
     }
 }
 

@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::protocol::udp;
 
-use super::{Guarantees, IncomingMessage, OutgoingMessage};
+use super::{Command, Guarantees, Incoming, IncomingMessage, Outgoing, OutgoingMessage};
 
 use tcp_stream_handler::{
     HandleEventError as TcpStreamHandleEventError,
@@ -35,8 +35,8 @@ pub struct Handler {
     udp: UdpHandler,
 
     // ---- Communication ----
-    incoming: Sender<IncomingMessage>,
-    outgoing: Receiver<OutgoingMessage>,
+    incoming: Sender<Incoming>,
+    outgoing: Receiver<Outgoing>,
 }
 
 impl Handler {
@@ -44,8 +44,8 @@ impl Handler {
         tcp_stream: TcpStream,
         udp: UdpSocket,
         poller: &Poller,
-        incoming: Sender<IncomingMessage>,
-        outgoing: Receiver<OutgoingMessage>,
+        incoming: Sender<Incoming>,
+        outgoing: Receiver<Outgoing>,
     ) -> io::Result<Self> {
         Ok(Handler {
             tcp_stream: TcpStreamHandler::new(tcp_stream, poller, TCP_STREAM_KEY)?,
@@ -57,25 +57,27 @@ impl Handler {
 }
 
 // ==========================================================================
-// Handle available outgoing messages
+// Handle outgoing
 // ==========================================================================
 
 impl Handler {
-    pub fn handle_available_outgoing_messages(
-        &mut self,
-        poller: &Poller,
-    ) -> Result<(), HandleOutgoingMessagesError> {
-        while let Some(message) = self.next_outgoing_message()? {
-            self.handle_outgoing_message(poller, message)?;
+    pub fn handle_outgoing(&mut self, poller: &Poller) -> Result<(), HandleOutgoingError> {
+        while let Some(outgoing) = self.next_outgoing()? {
+            match outgoing {
+                Outgoing::Message(message) => {
+                    self.handle_outgoing_message(poller, message)?;
+                }
+                Outgoing::Command(command) => {
+                    self.handle_command(command);
+                }
+            }
         }
         Ok(())
     }
 
-    fn next_outgoing_message(
-        &mut self,
-    ) -> Result<Option<OutgoingMessage>, HandleOutgoingMessagesError> {
+    fn next_outgoing(&mut self) -> Result<Option<Outgoing>, HandleOutgoingError> {
         match self.outgoing.try_recv() {
-            Ok(message) => Ok(Some(message)),
+            Ok(outgoing) => Ok(Some(outgoing)),
             Err(TryRecvError::Empty) => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -85,7 +87,7 @@ impl Handler {
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
-    ) -> Result<(), HandleOutgoingMessagesError> {
+    ) -> Result<(), HandleOutgoingError> {
         match (message.guarantees, message.data.len()) {
             (Guarantees::None, len) if len <= udp::MAX_PACKET_SIZE => {
                 self.udp.queue_outgoing_message(poller, message)?;
@@ -96,11 +98,19 @@ impl Handler {
         }
         Ok(())
     }
+
+    fn handle_command(&mut self, command: Command) {
+        match command {
+            Command::Shutdown => {
+                todo!("do shutdown logic");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleOutgoingMessagesError {
+pub enum HandleOutgoingError {
     #[error("failed to receive message from channel: {0}")]
     Channel(#[from] TryRecvError),
 

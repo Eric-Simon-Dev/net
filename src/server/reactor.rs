@@ -3,12 +3,12 @@ use std::{io, sync::Arc, thread};
 use polling::{Events, Poller};
 use thiserror::Error;
 
-use super::handler::{HandleEventsError, HandleOutgoingMessagesError, HandleTimersError, Handler};
+use super::handler::*;
 
 pub fn start(poller: Arc<Poller>, handler: Handler) {
     thread::spawn(move || {
         if let Err(e) = run_event_loop(poller, handler) {
-            eprintln!("reactor shutdown: {e}");
+            eprintln!("server reactor shutdown: {e}");
         }
     });
 }
@@ -31,7 +31,7 @@ fn run_event_loop(poller: Arc<Poller>, mut handler: Handler) -> Result<(), React
         // ---- Handle ----
 
         handler.handle_expired_timers()?;
-        handler.handle_available_outgoing_messages(&poller)?;
+        handler.handle_outgoing(&poller)?;
         handler.handle_events(&poller, &events)?;
     }
 }
@@ -42,8 +42,8 @@ pub enum ReactorError {
     #[error("failed to handle events: {0}")]
     Events(#[from] HandleEventsError),
 
-    #[error("failed to handle outgoing messages: {0}")]
-    OutgoingMessages(#[from] HandleOutgoingMessagesError),
+    #[error("failed to handle outgoing: {0}")]
+    Outgoing(#[from] HandleOutgoingError),
 
     #[error("failed to handle timers: {0}")]
     Timers(#[from] HandleTimersError),

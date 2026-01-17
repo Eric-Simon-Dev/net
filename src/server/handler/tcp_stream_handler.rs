@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
 
-use super::{IncomingMessage, OutgoingMessage};
+use super::{Incoming, IncomingMessage, OutgoingMessage};
 
 pub struct TcpStreamHandler {
     // ---- Socket ----
@@ -101,7 +101,7 @@ impl TcpStreamHandler {
         &mut self,
         poller: &Poller,
         event: Event,
-        incoming: &mut Sender<IncomingMessage>,
+        incoming: &mut Sender<Incoming>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
             self.receive_frame_segments()?;
@@ -128,18 +128,18 @@ impl TcpStreamHandler {
     }
 
     /// Fail if invalid (cannot just drop since the whole stream will be impossible to parse).
-    fn next_message(&mut self, key: usize) -> Result<Option<IncomingMessage>, HandleEventError> {
+    fn next_message(&mut self, key: usize) -> Result<Option<Incoming>, HandleEventError> {
         let (header, payload) = match Header::split_frame_from(&mut self.read_buf) {
             Ok(frame) => frame,
             Err(HeaderDecodeError::BufferTooSmall) => return Ok(None),
             Err(e) => return Err(e.into()),
         };
 
-        Ok(Some(IncomingMessage {
+        Ok(Some(Incoming::Message(IncomingMessage {
             data: payload,
             channel: header.channel,
             client_id: key,
-        }))
+        })))
     }
 
     fn send_frame_segments(&mut self, poller: &Poller) -> io::Result<()> {
@@ -185,7 +185,7 @@ pub enum HandleEventError {
     Header(#[from] HeaderDecodeError),
 
     #[error("failed to send message into channel: {0}")]
-    Channel(#[from] SendError<IncomingMessage>),
+    Channel(#[from] SendError<Incoming>),
 
     #[error("failed to read/write socket or update poller interest: {0}")]
     Io(#[from] io::Error),

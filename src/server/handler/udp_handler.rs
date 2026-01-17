@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
-use super::{IncomingMessage, OutgoingMessage};
+use super::{Incoming, IncomingMessage, OutgoingMessage};
 
 use client::ClientRegistry;
 
@@ -109,7 +109,7 @@ impl UdpHandler {
         &mut self,
         poller: &Poller,
         event: Event,
-        incoming: &mut Sender<IncomingMessage>,
+        incoming: &mut Sender<Incoming>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
             while let Some((datagram, key)) = self.next_datagram()? {
@@ -150,7 +150,7 @@ impl UdpHandler {
     /// # Preconditions
     ///
     /// `key` is a registered client.
-    fn validate_datagram(&mut self, mut datagram: BytesMut, key: usize) -> Option<IncomingMessage> {
+    fn validate_datagram(&mut self, mut datagram: BytesMut, key: usize) -> Option<Incoming> {
         let client = &mut self.clients[key];
 
         // Parse header or drop.
@@ -165,11 +165,11 @@ impl UdpHandler {
             return None;
         }
 
-        Some(IncomingMessage {
+        Some(Incoming::Message(IncomingMessage {
             data: payload,
             channel: header.channel(),
             client_id: key,
-        })
+        }))
     }
 
     fn send_datagrams(&mut self, poller: &Poller) -> io::Result<()> {
@@ -202,7 +202,7 @@ impl UdpHandler {
 #[non_exhaustive]
 pub enum HandleEventError {
     #[error("failed to send message into channel: {0}")]
-    Channel(#[from] SendError<IncomingMessage>),
+    Channel(#[from] SendError<Incoming>),
 
     #[error("failed to read/write socket or update poller interest: {0}")]
     Io(#[from] io::Error),

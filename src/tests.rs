@@ -55,26 +55,31 @@ fn multiple_exchanges_delivery_guarantee() {
 }
 
 fn run_server(server_addr: impl ToSocketAddrs, guarantees: server::Guarantees) {
-    use server::{OutgoingMessage, listen};
+    use server::{Incoming, Outgoing, OutgoingMessage, listen};
 
     let (outgoing, incoming, waker) = listen(server_addr).unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
-        let mut msg = incoming.recv().unwrap();
-        msg.data[0] += 1;
-        let msg = OutgoingMessage {
-            data: msg.data,
-            channel: msg.channel,
-            client_id: msg.client_id,
-            guarantees,
+        let Incoming::Message(mut msg) = incoming.recv().unwrap() else {
+            panic!("receive a notification");
         };
-        outgoing.send(msg).unwrap();
-        waker.process_available_operations().unwrap();
+        msg.data[0] += 1;
+        outgoing
+            .send(Outgoing::Message(OutgoingMessage {
+                data: msg.data,
+                channel: msg.channel,
+                client_id: msg.client_id,
+                guarantees,
+            }))
+            .unwrap();
+        waker.notify_reactor().unwrap();
     }
 
     // Final receive: ensure the expected value is reached.
-    let msg = incoming.recv().unwrap();
+    let Incoming::Message(msg) = incoming.recv().unwrap() else {
+        panic!("receive a notification");
+    };
     assert_eq!(msg.data[0], 32);
 }
 
@@ -83,29 +88,31 @@ fn run_client(
     server_addr: impl ToSocketAddrs,
     guarantees: client::Guarantees,
 ) {
-    use client::{OutgoingMessage, connect};
+    use client::{Incoming, Outgoing, OutgoingMessage, connect};
 
     let (outgoing, incoming, waker) = connect(client_addr, server_addr).unwrap();
 
     // Initial message with value 0.
-    let msg = OutgoingMessage {
-        data: BytesMut::zeroed(1),
-        channel: 0,
-        guarantees,
-    };
-    outgoing.send(msg).unwrap();
-    waker.process_available_operations().unwrap();
+    outgoing
+        .send(Outgoing::Message(OutgoingMessage {
+            data: BytesMut::zeroed(1),
+            channel: 0,
+            guarantees,
+        }))
+        .unwrap();
+    waker.notify_reactor().unwrap();
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
-        let mut msg = incoming.recv().unwrap();
+        let Incoming::Message(mut msg) = incoming.recv().unwrap();
         msg.data[0] += 1;
-        let msg = OutgoingMessage {
-            data: msg.data,
-            channel: msg.channel,
-            guarantees,
-        };
-        outgoing.send(msg).unwrap();
-        waker.process_available_operations().unwrap();
+        outgoing
+            .send(Outgoing::Message(OutgoingMessage {
+                data: msg.data,
+                channel: msg.channel,
+                guarantees,
+            }))
+            .unwrap();
+        waker.notify_reactor().unwrap();
     }
 }

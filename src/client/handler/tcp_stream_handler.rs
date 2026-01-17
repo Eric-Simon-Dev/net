@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
 
-use super::{IncomingMessage, OutgoingMessage};
+use super::{Incoming, IncomingMessage, OutgoingMessage};
 
 pub struct TcpStreamHandler {
     // ---- Socket ----
@@ -95,12 +95,12 @@ impl TcpStreamHandler {
         &mut self,
         poller: &Poller,
         event: Event,
-        incoming: &mut Sender<IncomingMessage>,
+        incoming: &mut Sender<Incoming>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
             self.receive_frame_segments()?;
             while let Some(message) = self.next_message()? {
-                incoming.send(message)?;
+                incoming.send(Incoming::Message(message))?;
             }
         }
         if event.writable {
@@ -178,7 +178,7 @@ pub enum HandleEventError {
     Header(#[from] HeaderDecodeError),
 
     #[error("failed to send message into channel: {0}")]
-    Channel(#[from] SendError<IncomingMessage>),
+    Channel(#[from] SendError<Incoming>),
 
     #[error("failed to read/write socket or update poller interest: {0}")]
     Io(#[from] io::Error),

@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE, SlidingWindow};
 
-use super::{IncomingMessage, OutgoingMessage};
+use super::{Incoming, IncomingMessage, OutgoingMessage};
 
 pub struct UdpHandler {
     send_seq: u64,
@@ -101,12 +101,12 @@ impl UdpHandler {
         &mut self,
         poller: &Poller,
         event: Event,
-        incoming: &mut Sender<IncomingMessage>,
+        incoming: &mut Sender<Incoming>,
     ) -> Result<(), HandleEventError> {
         if event.readable {
             while let Some(datagram) = self.next_datagram()? {
                 if let Some(message) = self.validate_datagram(datagram) {
-                    incoming.send(message)?;
+                    incoming.send(Incoming::Message(message))?;
                 }
             }
         }
@@ -181,7 +181,7 @@ impl UdpHandler {
 #[non_exhaustive]
 pub enum HandleEventError {
     #[error("failed to send message into channel: {0}")]
-    Channel(#[from] SendError<IncomingMessage>),
+    Channel(#[from] SendError<Incoming>),
 
     #[error("failed to read/write socket or update poller interest: {0}")]
     Io(#[from] io::Error),
