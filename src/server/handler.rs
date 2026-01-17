@@ -1,6 +1,6 @@
-mod tcp_handler;
-mod tcp_stream_handler;
-mod udp_handler;
+mod tcp;
+mod tcp_stream;
+mod udp;
 
 use std::{
     io,
@@ -13,26 +13,24 @@ use polling::{Event, Events, Poller};
 use slab::Slab;
 use thiserror::Error;
 
-use crate::protocol::udp;
+use crate::protocol;
 
 use super::{
     Command, Guarantees, Incoming, IncomingMessage, Notification, Outgoing, OutgoingMessage,
 };
 
-use tcp_handler::{NextConnectionError as TcpNextConnectionError, TcpHandler};
-use tcp_stream_handler::{
-    HandleEventError as TcpStreamHandleEventError,
-    QueueOutgoingMessageError as TcpStreamQueueOutgoingMessageError, TcpStreamHandler,
-};
-use udp_handler::{
-    HandleEventError as UdpHandleEventError,
-    QueueOutgoingMessageError as UdpQueueOutgoingMessageError, UdpHandler,
-};
+use tcp::TcpHandler;
+use tcp_stream::TcpStreamHandler;
+use udp::UdpHandler;
 
 // ---- Poller keys ----
 // `usize::MAX` is reserved for internal use from the crate.
 const TCP_KEY: usize = usize::MAX - 1;
 const UDP_KEY: usize = usize::MAX - 2;
+
+// ===================================================================================
+// Handler
+// ===================================================================================
 
 pub struct Handler {
     pub shutdown: bool,
@@ -195,7 +193,7 @@ impl Handler {
         }
 
         match (message.guarantees, message.data.len()) {
-            (Guarantees::None, len) if len <= udp::MAX_PACKET_SIZE => {
+            (Guarantees::None, len) if len <= protocol::udp::MAX_PACKET_SIZE => {
                 self.udp.queue_outgoing_message(poller, message)?;
             }
             _ => {
@@ -220,10 +218,10 @@ pub enum HandleOutgoingsError {
     Channel(#[from] TryRecvError),
 
     #[error("failed to queue message into TCP stream: {0}")]
-    TcpStream(#[from] TcpStreamQueueOutgoingMessageError),
+    TcpStream(#[from] tcp_stream::QueueOutgoingMessageError),
 
     #[error("failed to queue message into UDP: {0}")]
-    Udp(#[from] UdpQueueOutgoingMessageError),
+    Udp(#[from] udp::QueueOutgoingMessageError),
 }
 
 // ==========================================================================
@@ -271,8 +269,8 @@ impl Handler {
             match tcp_stream.handle_event(poller, event, &mut self.incomings) {
                 Ok(_) => (),
                 Err(
-                    TcpStreamHandleEventError::ConnectionClosed
-                    | TcpStreamHandleEventError::Header(_),
+                    tcp_stream::HandleEventError::ConnectionClosed
+                    | tcp_stream::HandleEventError::Header(_),
                 ) => {
                     self.remove_client(poller, event.key)?;
                 }
@@ -287,13 +285,13 @@ impl Handler {
 #[non_exhaustive]
 pub enum HandleSocketEventsError {
     #[error("failed to handle TCP event: {0}")]
-    Tcp(#[from] TcpNextConnectionError),
+    Tcp(#[from] tcp::NextConnectionError),
 
     #[error("failed to handle UDP event: {0}")]
-    Udp(#[from] UdpHandleEventError),
+    Udp(#[from] udp::HandleEventError),
 
     #[error("failed to handle TCP stream event: {0}")]
-    TcpStream(#[from] TcpStreamHandleEventError),
+    TcpStream(#[from] tcp_stream::HandleEventError),
 
     #[error("failed to add/remove client: {0}")]
     ClientManagement(#[from] ClientManagementError),

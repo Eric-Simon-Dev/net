@@ -1,5 +1,5 @@
-mod tcp_stream_handler;
-mod udp_handler;
+mod tcp_stream;
+mod udp;
 
 use std::{
     io,
@@ -11,23 +11,21 @@ use std::{
 use polling::{Event, Events, Poller};
 use thiserror::Error;
 
-use crate::protocol::udp;
+use crate::protocol;
 
 use super::{Command, Guarantees, Incoming, IncomingMessage, Outgoing, OutgoingMessage};
 
-use tcp_stream_handler::{
-    HandleEventError as TcpStreamHandleEventError,
-    QueueOutgoingMessageError as TcpStreamQueueOutgoingMessageError, TcpStreamHandler,
-};
-use udp_handler::{
-    HandleEventError as UdpHandleEventError,
-    QueueOutgoingMessageError as UdpQueueOutgoingMessageError, UdpHandler,
-};
+use tcp_stream::TcpStreamHandler;
+use udp::UdpHandler;
 
 // ---- Poller keys ----
 // `usize::MAX` is reserved for internal use from the crate.
 const TCP_STREAM_KEY: usize = usize::MAX - 1;
 const UDP_KEY: usize = usize::MAX - 2;
+
+// ===================================================================================
+// Handler
+// ===================================================================================
 
 pub struct Handler {
     pub shutdown: bool,
@@ -36,9 +34,9 @@ pub struct Handler {
     tcp_stream: TcpStreamHandler,
     udp: UdpHandler,
 
-    // ---- Communication ----
-    incoming: Sender<Incoming>,
-    outgoing: Receiver<Outgoing>,
+    // ---- Interface ----
+    incomings: Sender<Incoming>,
+    outgoings: Receiver<Outgoing>,
 }
 
 impl Handler {
@@ -46,15 +44,15 @@ impl Handler {
         tcp_stream: TcpStream,
         udp: UdpSocket,
         poller: &Poller,
-        incoming: Sender<Incoming>,
-        outgoing: Receiver<Outgoing>,
+        incomings: Sender<Incoming>,
+        outgoings: Receiver<Outgoing>,
     ) -> io::Result<Self> {
         Ok(Handler {
             shutdown: false,
             tcp_stream: TcpStreamHandler::create(tcp_stream, poller, TCP_STREAM_KEY)?,
             udp: UdpHandler::create(udp, poller, UDP_KEY)?,
-            incoming,
-            outgoing,
+            incomings,
+            outgoings,
         })
     }
 
@@ -100,7 +98,7 @@ impl Handler {
     }
 
     fn next_outgoing(&mut self) -> Result<Option<Outgoing>, HandleOutgoingsError> {
-        match self.outgoing.try_recv() {
+        match self.outgoings.try_recv() {
             Ok(outgoing) => Ok(Some(outgoing)),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) if self.shutdown => Ok(None),
@@ -114,7 +112,7 @@ impl Handler {
         message: OutgoingMessage,
     ) -> Result<(), HandleOutgoingsError> {
         match (message.guarantees, message.data.len()) {
-            (Guarantees::None, len) if len <= udp::MAX_PACKET_SIZE => {
+            (Guarantees::None, len) if len <= protocol::udp::MAX_PACKET_SIZE => {
                 self.udp.queue_outgoing_message(poller, message)?;
             }
             _ => {
@@ -138,10 +136,10 @@ pub enum HandleOutgoingsError {
     Channel(#[from] TryRecvError),
 
     #[error("failed to queue message into TCP stream: {0}")]
-    TcpStream(#[from] TcpStreamQueueOutgoingMessageError),
+    TcpStream(#[from] tcp_stream::QueueOutgoingMessageError),
 
     #[error("failed to queue message into UDP: {0}")]
-    Udp(#[from] UdpQueueOutgoingMessageError),
+    Udp(#[from] udp::QueueOutgoingMessageError),
 }
 
 // ==========================================================================
@@ -169,7 +167,7 @@ impl Handler {
         poller: &Poller,
         event: Event,
     ) -> Result<(), HandleSocketEventsError> {
-        self.udp.handle_event(poller, event, &mut self.incoming)?;
+        self.udp.handle_event(poller, event, &mut self.incomings)?;
         Ok(())
     }
 
@@ -179,7 +177,7 @@ impl Handler {
         event: Event,
     ) -> Result<(), HandleSocketEventsError> {
         self.tcp_stream
-            .handle_event(poller, event, &mut self.incoming)?;
+            .handle_event(poller, event, &mut self.incomings)?;
         Ok(())
     }
 }
@@ -188,10 +186,10 @@ impl Handler {
 #[non_exhaustive]
 pub enum HandleSocketEventsError {
     #[error("failed to handle UDP event: {0}")]
-    Udp(#[from] UdpHandleEventError),
+    Udp(#[from] udp::HandleEventError),
 
     #[error("failed to handle TCP stream event: {0}")]
-    TcpStream(#[from] TcpStreamHandleEventError),
+    TcpStream(#[from] tcp_stream::HandleEventError),
 }
 
 // ==========================================================================
