@@ -30,6 +30,8 @@ const TCP_STREAM_KEY: usize = usize::MAX - 1;
 const UDP_KEY: usize = usize::MAX - 2;
 
 pub struct Handler {
+    pub shutdown: bool,
+
     // ---- Handlers ----
     tcp_stream: TcpStreamHandler,
     udp: UdpHandler,
@@ -40,7 +42,7 @@ pub struct Handler {
 }
 
 impl Handler {
-    pub fn new(
+    pub fn create(
         tcp_stream: TcpStream,
         udp: UdpSocket,
         poller: &Poller,
@@ -48,12 +50,31 @@ impl Handler {
         outgoing: Receiver<Outgoing>,
     ) -> io::Result<Self> {
         Ok(Handler {
-            tcp_stream: TcpStreamHandler::new(tcp_stream, poller, TCP_STREAM_KEY)?,
-            udp: UdpHandler::new(udp, poller, UDP_KEY)?,
+            shutdown: false,
+            tcp_stream: TcpStreamHandler::create(tcp_stream, poller, TCP_STREAM_KEY)?,
+            udp: UdpHandler::create(udp, poller, UDP_KEY)?,
             incoming,
             outgoing,
         })
     }
+
+    pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestructionError> {
+        self.tcp_stream
+            .destroy(poller)
+            .map_err(DestructionError::TcpStream)?;
+        self.udp.destroy(poller).map_err(DestructionError::Udp)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum DestructionError {
+    #[error("failed to destroy TCP stream: {0}")]
+    TcpStream(io::Error),
+
+    #[error("failed to destroy UDP: {0}")]
+    Udp(io::Error),
 }
 
 // ==========================================================================
@@ -64,10 +85,10 @@ impl Handler {
     pub fn handle_outgoing(&mut self, poller: &Poller) -> Result<(), HandleOutgoingError> {
         while let Some(outgoing) = self.next_outgoing()? {
             match outgoing {
-                Outgoing::Message(message) => {
+                Outgoing::Network(message) => {
                     self.handle_outgoing_message(poller, message)?;
                 }
-                Outgoing::Command(command) => {
+                Outgoing::Internal(command) => {
                     self.handle_command(command);
                 }
             }

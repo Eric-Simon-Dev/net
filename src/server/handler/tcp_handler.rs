@@ -11,7 +11,7 @@ pub struct TcpHandler {
 }
 
 impl TcpHandler {
-    pub fn new(socket: TcpListener, poller: &Poller, key: usize) -> io::Result<Self> {
+    pub fn create(socket: TcpListener, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
         socket.set_nonblocking(true)?;
 
@@ -20,6 +20,11 @@ impl TcpHandler {
         (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
 
         Ok(Self { socket })
+    }
+
+    pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        poller.delete(&self.socket)?;
+        Ok(())
     }
 }
 

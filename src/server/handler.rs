@@ -35,6 +35,8 @@ const TCP_KEY: usize = usize::MAX - 1;
 const UDP_KEY: usize = usize::MAX - 2;
 
 pub struct Handler {
+    pub shutdown: bool,
+
     // ---- Handlers ----
     tcp: TcpHandler,
     udp: UdpHandler,
@@ -46,7 +48,7 @@ pub struct Handler {
 }
 
 impl Handler {
-    pub fn new(
+    pub fn create(
         tcp: TcpListener,
         udp: UdpSocket,
         poller: &Poller,
@@ -54,13 +56,37 @@ impl Handler {
         outgoing: Receiver<Outgoing>,
     ) -> io::Result<Self> {
         Ok(Handler {
-            tcp: TcpHandler::new(tcp, poller, TCP_KEY)?,
-            udp: UdpHandler::new(udp, poller, UDP_KEY)?,
+            shutdown: false,
+            tcp: TcpHandler::create(tcp, poller, TCP_KEY)?,
+            udp: UdpHandler::create(udp, poller, UDP_KEY)?,
             tcp_streams: Slab::new(),
             incoming,
             outgoing,
         })
     }
+
+    pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestructionError> {
+        let tcp_stream_keys: Vec<_> = self.tcp_streams.iter().map(|(key, _)| key).collect();
+        for key in tcp_stream_keys {
+            self.remove_client(poller, key)?;
+        }
+        self.tcp.destroy(poller).map_err(DestructionError::Tcp)?;
+        self.udp.destroy(poller).map_err(DestructionError::Udp)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum DestructionError {
+    #[error("failed to remove clients: {0}")]
+    Clients(#[from] ClientManagementError),
+
+    #[error("failed to destroy TCP: {0}")]
+    Tcp(io::Error),
+
+    #[error("failed to destroy UDP: {0}")]
+    Udp(io::Error),
 }
 
 // ==========================================================================
@@ -89,7 +115,7 @@ impl Handler {
 
         // Send notification.
         self.incoming
-            .send(Incoming::Notification(Notification::Connection {
+            .send(Incoming::Internal(Notification::Connection {
                 client_id: key,
                 addr,
             }))?;
@@ -107,7 +133,7 @@ impl Handler {
 
         // Send notification.
         self.incoming
-            .send(Incoming::Notification(Notification::Disconnection {
+            .send(Incoming::Internal(Notification::Disconnection {
                 client_id: key,
             }))?;
 
@@ -133,10 +159,10 @@ impl Handler {
     pub fn handle_outgoing(&mut self, poller: &Poller) -> Result<(), HandleOutgoingError> {
         while let Some(outgoing) = self.next_outgoing()? {
             match outgoing {
-                Outgoing::Message(message) => {
+                Outgoing::Network(message) => {
                     self.handle_outgoing_message(poller, message)?;
                 }
-                Outgoing::Command(command) => {
+                Outgoing::Internal(command) => {
                     self.handle_command(command);
                 }
             }
@@ -176,9 +202,7 @@ impl Handler {
 
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::Shutdown => {
-                todo!("do shutdown logic");
-            }
+            Command::Shutdown => self.shutdown = true,
         }
     }
 }

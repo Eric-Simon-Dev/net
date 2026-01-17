@@ -30,7 +30,7 @@ pub struct UdpHandler {
 }
 
 impl UdpHandler {
-    pub fn new(socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
+    pub fn create(socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
         socket.set_nonblocking(true)?;
 
@@ -47,6 +47,11 @@ impl UdpHandler {
             write_buf: BytesMut::new(),
             write_queue: VecDeque::new(),
         })
+    }
+
+    pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        poller.delete(&self.socket)?;
+        Ok(())
     }
 }
 
@@ -106,7 +111,7 @@ impl UdpHandler {
         if event.readable {
             while let Some(datagram) = self.next_datagram()? {
                 if let Some(message) = self.validate_datagram(datagram) {
-                    incoming.send(Incoming::Message(message))?;
+                    incoming.send(Incoming::Network(message))?;
                 }
             }
         }

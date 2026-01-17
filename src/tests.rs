@@ -61,12 +61,12 @@ fn run_server(server_addr: impl ToSocketAddrs, guarantees: server::Guarantees) {
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
-        let Incoming::Message(mut msg) = incoming.recv().unwrap() else {
+        let Incoming::Network(mut msg) = incoming.recv().unwrap() else {
             panic!("receive a notification");
         };
         msg.data[0] += 1;
         outgoing
-            .send(Outgoing::Message(OutgoingMessage {
+            .send(Outgoing::Network(OutgoingMessage {
                 data: msg.data,
                 channel: msg.channel,
                 client_id: msg.client_id,
@@ -77,7 +77,7 @@ fn run_server(server_addr: impl ToSocketAddrs, guarantees: server::Guarantees) {
     }
 
     // Final receive: ensure the expected value is reached.
-    let Incoming::Message(msg) = incoming.recv().unwrap() else {
+    let Incoming::Network(msg) = incoming.recv().unwrap() else {
         panic!("receive a notification");
     };
     assert_eq!(msg.data[0], 32);
@@ -94,7 +94,7 @@ fn run_client(
 
     // Initial message with value 0.
     outgoing
-        .send(Outgoing::Message(OutgoingMessage {
+        .send(Outgoing::Network(OutgoingMessage {
             data: BytesMut::zeroed(1),
             channel: 0,
             guarantees,
@@ -104,10 +104,10 @@ fn run_client(
 
     // Receive and send back `msg + 1` sixteen times.
     for _ in 0..16 {
-        let Incoming::Message(mut msg) = incoming.recv().unwrap();
+        let Incoming::Network(mut msg) = incoming.recv().unwrap();
         msg.data[0] += 1;
         outgoing
-            .send(Outgoing::Message(OutgoingMessage {
+            .send(Outgoing::Network(OutgoingMessage {
                 data: msg.data,
                 channel: msg.channel,
                 guarantees,

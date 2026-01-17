@@ -34,7 +34,7 @@ pub struct UdpHandler {
 }
 
 impl UdpHandler {
-    pub fn new(socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
+    pub fn create(socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
         socket.set_nonblocking(true)?;
 
@@ -50,6 +50,11 @@ impl UdpHandler {
             write_buf: BytesMut::new(),
             write_queue: VecDeque::new(),
         })
+    }
+
+    pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        poller.delete(&self.socket)?;
+        Ok(())
     }
 }
 
@@ -165,7 +170,7 @@ impl UdpHandler {
             return None;
         }
 
-        Some(Incoming::Message(IncomingMessage {
+        Some(Incoming::Network(IncomingMessage {
             data: payload,
             channel: header.channel(),
             client_id: key,

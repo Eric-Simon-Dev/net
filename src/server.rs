@@ -35,7 +35,7 @@ pub fn listen(
     let waker = Waker(poller.clone());
 
     // Create handler.
-    let handler = Handler::new(tcp, udp, &poller, incoming.0, outgoing.1)?;
+    let handler = Handler::create(tcp, udp, &poller, incoming.0, outgoing.1)?;
 
     reactor::start(poller, handler);
 
@@ -52,8 +52,8 @@ type ClientId = usize;
 
 #[derive(Debug, Clone)]
 pub enum Incoming {
-    Message(IncomingMessage),
-    Notification(Notification),
+    Network(IncomingMessage),
+    Internal(Notification),
 }
 
 #[derive(Debug, Clone)]
@@ -79,8 +79,8 @@ pub enum Notification {
 
 #[derive(Debug, Clone)]
 pub enum Outgoing {
-    Message(OutgoingMessage),
-    Command(Command),
+    Network(OutgoingMessage),
+    Internal(Command),
 }
 
 #[derive(Debug, Clone)]

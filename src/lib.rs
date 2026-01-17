@@ -1,4 +1,4 @@
-//! Transport interface for client/server.
+//! Transport layer interface for client/server.
 //!
 //! - Doesn't support mixing IPv4 and IPv6 sockets.
 //! - Exposes [`bytes::BytesMut`] for data management.
@@ -12,42 +12,54 @@
 //! /// - Bind to `SERVER_ADDR`.
 //! /// - Wait for a hello message.
 //! fn server() {
-//!     use net::server::{listen, Incoming, Notification};
+//!     use net::server::{listen, Incoming, Outgoing, Command, Notification};
 //!
 //!     let (outgoing, incoming, waker) = listen(SERVER_ADDR).unwrap();
 //!
 //!     // Receive a connection notification first.
-//!     let recv = incoming.recv().unwrap();
-//!     assert!(matches!(recv, Incoming::Notification(Notification::Connection { .. })));
+//!     assert!(matches!(incoming.recv().unwrap(), Incoming::Internal(Notification::Connection { .. })));
 //!
-//!     // Receive a message second.
-//!     let recv = incoming.recv().unwrap();
-//!     assert!(matches!(recv, Incoming::Message(_)));
+//!     // Receive a "hello" message second.
+//!     if let Incoming::Network(message) = incoming.recv().unwrap() {
+//!         assert_eq!(message.data[..], "hello".as_bytes()[..]);
+//!     }
+//!     else {
+//!         panic!("shoud receive a message");
+//!     }
 //!
-//!     // Does it contains "hello" ?
-//!     let Incoming::Message(message) = recv else {
-//!         unreachable!("pattern checked earlier");
-//!     };
-//!     assert_eq!(message.data[..], "hello".as_bytes()[..]);
+//!     // Receive a disconnection notification third.
+//!     assert!(matches!(incoming.recv().unwrap(), Incoming::Internal(Notification::Disconnection { .. })));
+//!
+//!     outgoing.send(Outgoing::Internal(Command::Shutdown)).unwrap();
+//!     waker.notify_reactor().unwrap();
 //! }
 //!
 //! /// - Bind to `CLIENT_ADDR` & Connect to `SERVER_ADDR`.
 //! /// - Send a hello message.
 //! fn client() {
-//!     use net::client::{connect, OutgoingMessage, Outgoing, Guarantees};
+//!     use net::client::{connect, OutgoingMessage, Outgoing, Command, Guarantees};
 //!     use bytes::BytesMut;
 //!
 //!     let (outgoing, incoming, waker) = connect(CLIENT_ADDR, SERVER_ADDR).unwrap();
 //!
-//!     outgoing.send(Outgoing::Message(OutgoingMessage {
+//!     outgoing.send(Outgoing::Network(OutgoingMessage {
 //!         data: BytesMut::from("hello".as_bytes()),
 //!         channel: 0,
 //!         guarantees : Guarantees::Delivery,
 //!     })).unwrap();
 //!     waker.notify_reactor().unwrap();
 //!
-//!     // Message will be queued but not sent if client terminates before socket ready.
+//!     // Sending messages will actually queue them.
+//!     // They will be sent whenever their socket is ready, in a next iteration.
+//!     // Disconnecting or shutting down before will prevent them from being sent.
+//!     // So we wait a bit to ensure it has been sent.
+//!     //
+//!     // TODO: Remove this constraint by checking for queued messages
+//!     // and continue sending & ignoring channels before shutting down once all sent.
 //!     std::thread::sleep(std::time::Duration::from_millis(100));
+//!
+//!     outgoing.send(Outgoing::Internal(Command::Shutdown)).unwrap();
+//!     waker.notify_reactor().unwrap();
 //! }
 //!
 //! # std::thread::scope(|s| {

@@ -3,7 +3,7 @@
 use std::{
     collections::VecDeque,
     io::{self, Read, Write},
-    net::TcpStream,
+    net::{Shutdown, TcpStream},
     sync::mpsc::{SendError, Sender},
 };
 
@@ -27,7 +27,7 @@ pub struct TcpStreamHandler {
 }
 
 impl TcpStreamHandler {
-    pub fn new(socket: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
+    pub fn create(socket: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
         // Set socket to non-blocking.
         socket.set_nonblocking(true)?;
 
@@ -42,6 +42,12 @@ impl TcpStreamHandler {
             write_buf: BytesMut::new(),
             write_queue: VecDeque::new(),
         })
+    }
+
+    pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        let _ = self.socket.shutdown(Shutdown::Both);
+        poller.delete(&self.socket)?;
+        Ok(())
     }
 }
 
@@ -100,7 +106,7 @@ impl TcpStreamHandler {
         if event.readable {
             self.receive_frame_segments()?;
             while let Some(message) = self.next_message()? {
-                incoming.send(Incoming::Message(message))?;
+                incoming.send(Incoming::Network(message))?;
             }
         }
         if event.writable {

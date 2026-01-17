@@ -135,7 +135,7 @@ impl TcpStreamHandler {
             Err(e) => return Err(e.into()),
         };
 
-        Ok(Some(Incoming::Message(IncomingMessage {
+        Ok(Some(Incoming::Network(IncomingMessage {
             data: payload,
             channel: header.channel,
             client_id: key,

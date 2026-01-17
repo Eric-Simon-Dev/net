@@ -3,19 +3,18 @@ use std::{io, sync::Arc, thread};
 use polling::{Events, Poller};
 use thiserror::Error;
 
-use super::handler::{HandleEventsError, HandleOutgoingError, HandleTimersError, Handler};
+use super::handler::*;
 
 pub fn start(poller: Arc<Poller>, handler: Handler) {
-    thread::spawn(move || {
-        if let Err(e) = run_event_loop(poller, handler) {
-            eprintln!("client reactor shutdown: {e}");
-        }
+    thread::spawn(move || match run_event_loop(poller, handler) {
+        Ok(()) => println!("client reactor shutdown"),
+        Err(e) => eprintln!("client reactor crash: {e}"),
     });
 }
 
 fn run_event_loop(poller: Arc<Poller>, mut handler: Handler) -> Result<(), ReactorError> {
     let mut events = Events::new();
-    loop {
+    while !handler.shutdown {
         // ---- Wait ----
 
         // Wait for either:
@@ -34,6 +33,8 @@ fn run_event_loop(poller: Arc<Poller>, mut handler: Handler) -> Result<(), React
         handler.handle_outgoing(&poller)?;
         handler.handle_events(&poller, &events)?;
     }
+    handler.destroy(&poller)?;
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -50,4 +51,7 @@ pub enum ReactorError {
 
     #[error("failed to wait: {0}")]
     Wait(#[from] io::Error),
+
+    #[error("failed to destroy handler: {0}")]
+    Destruction(#[from] DestructionError),
 }
