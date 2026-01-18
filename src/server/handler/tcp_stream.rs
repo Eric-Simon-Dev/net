@@ -4,7 +4,6 @@ use std::{
     collections::VecDeque,
     io::{self, Read, Write},
     net::{Shutdown, TcpStream},
-    sync::mpsc::{SendError, Sender},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -13,16 +12,17 @@ use thiserror::Error;
 
 use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
 
-use super::{Incoming, IncomingMessage, OutgoingMessage};
+use super::{IncomingMessage, OutgoingMessage};
 
 // ===================================================================================
 // Handler
 // ===================================================================================
 
 pub struct TcpStreamHandler {
-    // ---- Socket ----
+    // ---- I/O ----
     socket: TcpStream,
-    current_interest: Event,
+    key: usize,
+    interest: Event,
 
     // ---- Buffers ----
     recv_buf: BytesMut,
@@ -31,17 +31,25 @@ pub struct TcpStreamHandler {
 }
 
 impl TcpStreamHandler {
-    pub fn create(socket: TcpStream, poller: &Poller, key: usize) -> io::Result<Self> {
-        // Set socket to non-blocking.
+    pub fn create(poller: &Poller, socket: TcpStream, key: usize) -> io::Result<Self> {
+        // ---- I/O Setup ----
+
+        // - Set socket to non-blocking.
+        // - Add socket to poller with read interest.
+
         socket.set_nonblocking(true)?;
 
-        // Add socket to poller with read interest.
-        let current_interest = Event::readable(key);
-        (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
+        let interest = Event::readable(key);
+        unsafe {
+            poller.add_with_mode(&socket, interest, PollMode::Level)?;
+        }
+
+        // ----
 
         Ok(Self {
             socket,
-            current_interest,
+            key,
+            interest,
             recv_buf: BytesMut::new(),
             send_buf: BytesMut::new(),
             send_queue: VecDeque::new(),
@@ -49,174 +57,185 @@ impl TcpStreamHandler {
     }
 
     pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
-        // Flush unsent messages.
-        while !self.send_queue.is_empty() {
-            self.send()?;
-        }
+        // ---- I/O Shutdown ----
 
-        // Shutdown socket (notifies client).
+        // - Remove socket from poller.
+        // - Shutdown socket.
+
+        poller.delete(&self.socket)?;
+
         let _ = self.socket.shutdown(Shutdown::Both);
 
-        // Remove socket from poller.
-        poller.delete(&self.socket)?;
+        // ----
 
         Ok(())
     }
 }
 
 // ==========================================================================
-// Queue outgoing message
+// Utils
 // ==========================================================================
 
 impl TcpStreamHandler {
-    pub fn queue_outgoing_message(
-        &mut self,
-        poller: &Poller,
-        message: OutgoingMessage,
-    ) -> Result<(), QueueOutgoingMessageError> {
-        // Create header.
-        let header = Header::new(message.data.len(), message.channel)?;
-
-        // Buffer frame.
-        header.put_into(&mut self.send_buf);
-        self.send_buf.put(message.data);
-        let frame = self.send_buf.split().freeze();
-
-        // Queue frame.
-        self.send_queue.push_front(frame);
-
-        // Update poller to add write interest.
-        if !self.current_interest.writable {
-            self.current_interest.writable = true;
-            poller.modify(&self.socket, self.current_interest)?;
+    fn update_interest(&mut self, poller: &Poller, writable: bool) -> io::Result<()> {
+        if self.interest.writable != writable {
+            self.interest.writable = writable;
+            poller.modify(&self.socket, self.interest)?;
         }
-
         Ok(())
+    }
+}
+
+// ==========================================================================
+// Read
+// ==========================================================================
+
+impl TcpStreamHandler {
+    /// Drain `socket` data into `recv_buf`.
+    pub fn read(&mut self) -> Result<(), ReadError> {
+        let mut buf = [0; 4096];
+        loop {
+            match self.socket.read(&mut buf) {
+                // Connection closed.
+                Ok(0) => return Err(ReadError::ConnectionClosed),
+
+                // Read `n` bytes.
+                Ok(n) => self.recv_buf.put(&buf[..n]),
+
+                // Socket/Data unavailable (no read).
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::Interrupted =>
+                {
+                    return Ok(());
+                }
+
+                // Socket broken.
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum QueueOutgoingMessageError {
-    #[error("failed to create frame header: {0}")]
-    CreateFrameHeader(#[from] HeaderCreateError),
+pub enum ReadError {
+    #[error("connection closed")]
+    ConnectionClosed,
 
-    #[error("failed to update poller interest: {0}")]
-    UpdatePollerInterest(#[from] io::Error),
+    #[error(transparent)]
+    Other(#[from] io::Error),
 }
 
 // ==========================================================================
-// Handle socket event
+// Incoming
 // ==========================================================================
 
 impl TcpStreamHandler {
-    pub fn handle_socket_event(
-        &mut self,
-        poller: &Poller,
-        event: Event,
-        incomings: &mut Sender<Incoming>,
-    ) -> Result<(), HandleEventError> {
-        if event.readable {
-            let connection_closed = self.recv().map_err(HandleEventError::ReadSocket)?;
-            while let Some(message) = self.next_incoming_message(event.key)? {
-                incomings.send(Incoming::Network(message))?;
-            }
-            if connection_closed {
-                return Err(HandleEventError::ConnectionClosed);
-            }
-        }
-        if event.writable {
-            let all_sent = self.send().map_err(HandleEventError::WriteSocket)?;
-            if all_sent {
-                // Update poller to remove write interest.
-                self.current_interest.writable = false;
-                poller
-                    .modify(&self.socket, self.current_interest)
-                    .map_err(HandleEventError::UpdatePollerInterest)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Drain `socket` into `recv_buf` until WouldBlock.
-    ///
-    /// `Ok(true)` if connection was closed.
-    fn recv(&mut self) -> io::Result<bool> {
-        let mut buf = [0; 4096];
-        loop {
-            match self.socket.read(&mut buf) {
-                Ok(0) => return Ok(true),
-                Ok(n) => self.recv_buf.put(&buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn next_incoming_message(
-        &mut self,
-        key: usize,
-    ) -> Result<Option<IncomingMessage>, HeaderDecodeError> {
+    /// Return message from `recv_buf`.
+    pub fn incoming(&mut self) -> Result<Option<IncomingMessage>, IncomingError> {
         match Header::split_frame_from(&mut self.recv_buf) {
             Ok((header, payload)) => Ok(Some(IncomingMessage {
                 data: payload,
                 channel: header.channel,
-                client_id: key,
+                client_id: self.key,
             })),
             Err(HeaderDecodeError::BufferTooSmall) => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
-    }
-
-    /// Drain `send_queue` into `socket` until WouldBlock
-    ///
-    /// `Ok(true)` if all frames have been sent.
-    fn send(&mut self) -> io::Result<bool> {
-        while let Some(mut frame) = self.send_queue.pop_back() {
-            match self.socket.write(&frame) {
-                // Partial send: Remove sent bytes and push back remaining ones.
-                Ok(n) if n < frame.len() => {
-                    let _ = frame.split_to(n);
-                    self.send_queue.push_back(frame);
-                }
-
-                // Complete send.
-                Ok(_) => (),
-
-                // Socket full: Push back bytes and return.
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.send_queue.push_back(frame);
-                    return Ok(false);
-                }
-
-                // Error.
-                Err(e) => return Err(e),
-            }
-        }
-        // Exiting loop => All frames have been sent.
-        Ok(true)
     }
 }
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum HandleEventError {
-    #[error("client closed connection")]
+pub enum IncomingError {
+    #[error("failed to decode header: {0}")]
+    DecodeHeader(#[from] HeaderDecodeError),
+}
+
+// ==========================================================================
+// Write
+// ==========================================================================
+
+impl TcpStreamHandler {
+    /// Fill `socket` from `send_buf` data.
+    pub fn write(&mut self, poller: &Poller) -> Result<(), WriteError> {
+        while let Some(mut frame) = self.send_queue.pop_back() {
+            match self.socket.write(&frame) {
+                // Connection closed.
+                Ok(0) => return Err(WriteError::ConnectionClosed),
+
+                // Write `n` bytes.
+                Ok(n) => {
+                    if n < frame.len() {
+                        self.send_queue.push_back(frame.split_off(n));
+                    }
+                }
+
+                // Socket unavailable (no write).
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::Interrupted =>
+                {
+                    self.send_queue.push_back(frame);
+                    return Ok(());
+                }
+
+                // Socket broken.
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        // Exiting while loop => All data was sent.
+        self.update_interest(poller, false)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum WriteError {
+    #[error("connection closed")]
     ConnectionClosed,
 
-    #[error("failed to decode frame header: {0}")]
-    DecodeFrameHeader(#[from] HeaderDecodeError),
+    #[error(transparent)]
+    Other(#[from] io::Error),
+}
 
-    #[error("failed to send incoming message: {0}")]
-    SendIncomingMessage(#[from] SendError<Incoming>),
+// ==========================================================================
+// Outgoing
+// ==========================================================================
 
-    // ---- I/O ----
-    #[error("failed to read from socket: {0}")]
-    ReadSocket(io::Error),
+impl TcpStreamHandler {
+    /// Enqueue message into `send_buf`.
+    pub fn outgoing(
+        &mut self,
+        poller: &Poller,
+        message: OutgoingMessage,
+    ) -> Result<(), OutgoingError> {
+        // Create & Buffer header.
+        let header = Header::new(message.data.len(), message.channel)?;
+        header.put_into(&mut self.send_buf);
 
-    #[error("failed to write to socket: {0}")]
-    WriteSocket(io::Error),
+        // Buffer payload.
+        self.send_buf.put(message.data);
 
-    #[error("failed to update poller interest: {0}")]
-    UpdatePollerInterest(io::Error),
+        // Enqueue frame (header + payload).
+        self.send_queue.push_front(self.send_buf.split().freeze());
+
+        self.update_interest(poller, true)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum OutgoingError {
+    #[error("failed to create header: {0}")]
+    CreateHeader(#[from] HeaderCreateError),
+
+    #[error("failed to update interest: {0}")]
+    UpdateInterest(#[from] io::Error),
 }

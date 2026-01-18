@@ -46,6 +46,9 @@
 //!     })).unwrap();
 //!     waker.wake_reactor().unwrap();
 //!
+//!     // Wait for socket to be ready and thus messages to be sent.
+//!     std::thread::sleep(std::time::Duration::from_millis(100));
+//! 
 //!     // shutdown
 //!     outgoings.send(Outgoing::Internal(Command::Shutdown)).unwrap();
 //!     waker.wake_reactor().unwrap();

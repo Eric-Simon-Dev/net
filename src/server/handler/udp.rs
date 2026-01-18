@@ -6,7 +6,6 @@ use std::{
     collections::VecDeque,
     io,
     net::{SocketAddr, UdpSocket},
-    sync::mpsc::{SendError, Sender},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -15,7 +14,7 @@ use thiserror::Error;
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
-use super::{Incoming, IncomingMessage, OutgoingMessage};
+use super::{IncomingMessage, OutgoingMessage};
 
 use client::ClientRegistry;
 
@@ -29,81 +28,211 @@ pub struct UdpHandler {
 
     // ---- Socket ----
     socket: UdpSocket,
-    current_interest: Event,
+    interest: Event,
 
     // ---- Buffers ----
-    read_buf: BytesMut,
-    write_buf: BytesMut,
-    write_queue: VecDeque<(Bytes, SocketAddr)>,
+    recv_buf: BytesMut,
+    recv_queue: VecDeque<IncomingMessage>,
+    send_buf: BytesMut,
+    send_queue: VecDeque<(Bytes, SocketAddr)>,
 }
 
 impl UdpHandler {
     pub fn create(socket: UdpSocket, poller: &Poller, key: usize) -> io::Result<Self> {
-        // Set socket to non-blocking.
+        // ---- I/O Setup ----
+
+        // - Set socket to non-blocking.
+        // - Add socket to poller with read interest.
+
         socket.set_nonblocking(true)?;
 
-        // Add socket to poller with read interest.
-        let current_interest = Event::readable(key);
-        (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
+        let interest = Event::readable(key);
+        unsafe {
+            poller.add_with_mode(&socket, interest, PollMode::Level)?;
+        }
+
+        // ----
 
         Ok(Self {
             clients: ClientRegistry::new(),
             socket,
-            current_interest,
-            read_buf: BytesMut::new(),
-            write_buf: BytesMut::new(),
-            write_queue: VecDeque::new(),
+            interest,
+            recv_buf: BytesMut::new(),
+            recv_queue: VecDeque::new(),
+            send_buf: BytesMut::new(),
+            send_queue: VecDeque::new(),
         })
     }
 
     pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
-        // Flush unsent messages.
-        while !self.write_queue.is_empty() {
-            self.send_datagrams(poller)?;
-        }
+        // ---- I/O Shutdown ----
 
-        // Remove socket from poller.
+        // - Remove socket from poller.
+
         poller.delete(&self.socket)?;
+
+        // ----
 
         Ok(())
     }
 }
 
 // ==========================================================================
-// Queue outgoing message
+// Utils
 // ==========================================================================
 
 impl UdpHandler {
-    /// # Preconditions
-    ///
-    /// `message.client_key` is a registered client.
-    pub fn queue_outgoing_message(
+    fn update_interest(&mut self, poller: &Poller, writable: bool) -> io::Result<()> {
+        if self.interest.writable != writable {
+            self.interest.writable = writable;
+            poller.modify(&self.socket, self.interest)?;
+        }
+        Ok(())
+    }
+}
+
+// ==========================================================================
+// Read
+// ==========================================================================
+
+impl UdpHandler {
+    /// Drain `socket` data into `recv_buf`.
+    pub fn read(&mut self) -> Result<(), ReadError> {
+        let mut buf = [0; MAX_PACKET_SIZE];
+        loop {
+            match self.socket.recv_from(&mut buf) {
+                // Receive `n` bytes from `addr`.
+                Ok((n, addr)) => {
+                    self.process_incoming_datagram(&buf, n, addr);
+                }
+
+                // Socket/Data unavailable (no read).
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::Interrupted =>
+                {
+                    return Ok(());
+                }
+
+                // Socket broken.
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    fn process_incoming_datagram(&mut self, buf: &[u8], n: usize, addr: SocketAddr) {
+        // Drop if `addr` unregistered.
+        let Some(key) = self.clients.get_key(&addr) else {
+            return;
+        };
+        let client = &mut self.clients[key];
+
+        // Buffer datagram.
+        self.recv_buf.put(&buf[..n]);
+        let mut datagram = self.recv_buf.split();
+
+        // Drop if header unparsable.
+        let Ok(header) = Header::split_from(&mut datagram) else {
+            return;
+        };
+        let payload = datagram;
+
+        // Drop if header seq number invalid.
+        if !client.recv_seq_window.check_and_mark(header.seq()) {
+            return;
+        }
+
+        self.recv_queue.push_front(IncomingMessage {
+            client_id: key,
+            data: payload,
+            channel: header.channel(),
+        });
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+#[error(transparent)]
+pub struct ReadError(#[from] io::Error);
+
+// ==========================================================================
+// Incoming
+// ==========================================================================
+
+impl UdpHandler {
+    /// Return message from `recv_buf`.
+    pub fn incoming(&mut self) -> Option<IncomingMessage> {
+        self.recv_queue.pop_back()
+    }
+}
+
+// ==========================================================================
+// Write
+// ==========================================================================
+
+impl UdpHandler {
+    /// Fill `socket` from `send_buf` data.
+    pub fn write(&mut self, poller: &Poller) -> Result<(), WriteError> {
+        while let Some((datagram, addr)) = self.send_queue.pop_back() {
+            match self.socket.send_to(&datagram, addr) {
+                // Write.
+                Ok(_) => (),
+
+                // Socket unavailable (no write).
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::Interrupted =>
+                {
+                    self.send_queue.push_back((datagram, addr));
+                    return Ok(());
+                }
+
+                // Socket broken.
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        // Exiting while loop => All data was sent.
+        self.update_interest(poller, false)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+#[error(transparent)]
+pub struct WriteError(#[from] io::Error);
+
+// ==========================================================================
+// Outgoing
+// ==========================================================================
+
+impl UdpHandler {
+    /// Enqueue message into `send_buf`.
+    pub fn outgoing(
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
-    ) -> Result<(), QueueOutgoingMessageError> {
+    ) -> Result<(), OutgoingError> {
         let client = &mut self.clients[message.client_id];
 
-        // Create header.
+        // Create & Buffer header.
         let header = Header::Classic {
             channel: message.channel,
             seq: client.send_seq,
         };
         client.send_seq += 1;
+        header.put_into(&mut self.send_buf);
 
-        // Buffer datagram.
-        header.put_into(&mut self.write_buf);
-        self.write_buf.put(message.data);
-        let datagram = self.write_buf.split().freeze();
+        // Buffer payload.
+        self.send_buf.put(message.data);
 
-        // Queue datagram.
-        self.write_queue.push_front((datagram, client.addr));
+        // Enqueue datagram (header + payload).
+        self.send_queue
+            .push_front((self.send_buf.split().freeze(), client.addr));
 
-        // Set writable interest.
-        if !self.current_interest.writable {
-            self.current_interest.writable = true;
-            poller.modify(&self.socket, self.current_interest)?;
-        }
+        self.update_interest(poller, true)?;
 
         Ok(())
     }
@@ -111,115 +240,7 @@ impl UdpHandler {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum QueueOutgoingMessageError {
-    #[error("failed to update poller interest: {0}")]
-    PollerInterest(#[from] io::Error),
-}
-
-// ==========================================================================
-// Handle event
-// ==========================================================================
-
-impl UdpHandler {
-    pub fn handle_event(
-        &mut self,
-        poller: &Poller,
-        event: Event,
-        incoming: &mut Sender<Incoming>,
-    ) -> Result<(), HandleEventError> {
-        if event.readable {
-            while let Some((datagram, key)) = self.next_datagram()? {
-                if let Some(message) = self.validate_datagram(datagram, key) {
-                    incoming.send(message)?;
-                }
-            }
-        }
-        if event.writable {
-            self.send_datagrams(poller)?;
-        }
-        Ok(())
-    }
-
-    /// Drop datagrams from unregistered clients.
-    fn next_datagram(&mut self) -> io::Result<Option<(BytesMut, usize)>> {
-        let mut buf = [0; MAX_PACKET_SIZE];
-        loop {
-            let (n, addr) = match self.socket.recv_from(&mut buf) {
-                Ok(recv) => recv,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
-                Err(e) => return Err(e),
-            };
-
-            // Get client key or drop.
-            let Some(key) = self.clients.get_key(&addr) else {
-                continue;
-            };
-
-            // Buffer datagram.
-            self.read_buf.put(&buf[..n]);
-            let datagram = self.read_buf.split();
-
-            return Ok(Some((datagram, key)));
-        }
-    }
-
-    /// # Preconditions
-    ///
-    /// `key` is a registered client.
-    fn validate_datagram(&mut self, mut datagram: BytesMut, key: usize) -> Option<Incoming> {
-        let client = &mut self.clients[key];
-
-        // Parse header or drop.
-        let header = match Header::split_from(&mut datagram) {
-            Ok(header) => header,
-            Err(_) => return None,
-        };
-        let payload = datagram;
-
-        // Validate seq or drop.
-        if !client.recv_seq_window.check_and_mark(header.seq()) {
-            return None;
-        }
-
-        Some(Incoming::Network(IncomingMessage {
-            data: payload,
-            channel: header.channel(),
-            client_id: key,
-        }))
-    }
-
-    fn send_datagrams(&mut self, poller: &Poller) -> io::Result<()> {
-        while let Some((datagram, addr)) = self.write_queue.pop_back() {
-            match self.socket.send_to(&datagram, addr) {
-                // Successfully send.
-                Ok(_) => (),
-
-                // Socket full.
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    self.write_queue.push_back((datagram, addr));
-                    return Ok(());
-                }
-
-                // Error.
-                Err(e) => return Err(e),
-            }
-        }
-        // Exiting loop => All queued datagrams have been sent.
-
-        // Remove writable interest.
-        self.current_interest.writable = false;
-        poller.modify(&self.socket, self.current_interest)?;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum HandleEventError {
-    #[error("failed to send message into channel: {0}")]
-    Channel(#[from] SendError<Incoming>),
-
-    #[error("failed to read/write socket or update poller interest: {0}")]
-    Io(#[from] io::Error),
+pub enum OutgoingError {
+    #[error("failed to update interest: {0}")]
+    UpdateInterest(#[from] io::Error),
 }
