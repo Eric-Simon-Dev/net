@@ -10,7 +10,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 use thiserror::Error;
 
-use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
+use crate::protocol::tcp::{Header, CreateHeaderError, DecodeHeaderError};
 
 use super::{IncomingMessage, OutgoingMessage};
 
@@ -140,7 +140,7 @@ impl TcpStreamHandler {
                 channel: header.channel,
                 client_id: self.key,
             })),
-            Err(HeaderDecodeError::BufferTooSmall) => Ok(None),
+            Err(DecodeHeaderError::BufferTooSmall) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
@@ -150,7 +150,7 @@ impl TcpStreamHandler {
 #[non_exhaustive]
 pub enum IncomingError {
     #[error("failed to decode header: {0}")]
-    DecodeHeader(#[from] HeaderDecodeError),
+    DecodeHeader(#[from] DecodeHeaderError),
 }
 
 // ==========================================================================
@@ -234,7 +234,7 @@ impl TcpStreamHandler {
 #[non_exhaustive]
 pub enum OutgoingError {
     #[error("failed to create header: {0}")]
-    CreateHeader(#[from] HeaderCreateError),
+    CreateHeader(#[from] CreateHeaderError),
 
     #[error("failed to update interest: {0}")]
     UpdateInterest(#[from] io::Error),

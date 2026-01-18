@@ -11,7 +11,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 use thiserror::Error;
 
-use crate::protocol::tcp::{Header, HeaderCreateError, HeaderDecodeError};
+use crate::protocol::tcp::{Header, CreateHeaderError, DecodeHeaderError};
 
 use super::{Incoming, IncomingMessage, OutgoingMessage};
 
@@ -99,7 +99,7 @@ impl TcpStreamHandler {
 #[non_exhaustive]
 pub enum QueueOutgoingMessageError {
     #[error("failed to create frame header: {0}")]
-    CreateFrameHeader(#[from] HeaderCreateError),
+    CreateFrameHeader(#[from] CreateHeaderError),
 
     #[error("failed to update poller interest: {0}")]
     UpdatePollerInterest(#[from] io::Error),
@@ -153,13 +153,13 @@ impl TcpStreamHandler {
         }
     }
 
-    fn next_incoming_message(&mut self) -> Result<Option<IncomingMessage>, HeaderDecodeError> {
+    fn next_incoming_message(&mut self) -> Result<Option<IncomingMessage>, DecodeHeaderError> {
         match Header::split_frame_from(&mut self.recv_buf) {
             Ok((header, payload)) => Ok(Some(IncomingMessage {
                 data: payload,
                 channel: header.channel,
             })),
-            Err(HeaderDecodeError::BufferTooSmall) => Ok(None),
+            Err(DecodeHeaderError::BufferTooSmall) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -201,7 +201,7 @@ pub enum HandleEventError {
     ConnectionClosed,
 
     #[error("failed to decode frame header: {0}")]
-    DecodeFrameHeader(#[from] HeaderDecodeError),
+    DecodeFrameHeader(#[from] DecodeHeaderError),
 
     #[error("failed to send incoming message: {0}")]
     SendIncomingMessage(#[from] SendError<Incoming>),
