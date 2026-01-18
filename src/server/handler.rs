@@ -63,17 +63,21 @@ impl Handler {
         })
     }
 
-    /// Will flush unsent messages before.
+    /// Flush unsent messages before destruction.
     pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestroyError> {
-        // Remove all clients.
+        // Remove clients.
         let client_keys: Vec<usize> = self.tcp_streams.iter().map(|(key, _)| key).collect();
         for key in client_keys {
             self.remove_client(poller, key)?;
         }
 
-        // Destroy i/o primitive handlers.
-        self.tcp.destroy(poller).map_err(DestroyError::Tcp)?;
-        self.udp.destroy(poller).map_err(DestroyError::Udp)?;
+        // Destroy handlers.
+        self.tcp
+            .destroy(poller)
+            .map_err(DestroyError::DestroyTcpHandler)?;
+        self.udp
+            .destroy(poller)
+            .map_err(DestroyError::DestroyUdpHandler)?;
 
         Ok(())
     }
@@ -83,13 +87,13 @@ impl Handler {
 #[non_exhaustive]
 pub enum DestroyError {
     #[error("failed to remove clients: {0}")]
-    Clients(#[from] ClientManagementError),
+    RemoveClients(#[from] ClientManagementError),
 
-    #[error("failed to destroy TCP: {0}")]
-    Tcp(io::Error),
+    #[error("failed to destroy TCP handler: {0}")]
+    DestroyTcpHandler(io::Error),
 
-    #[error("failed to destroy UDP: {0}")]
-    Udp(io::Error),
+    #[error("failed to destroy UDP handler: {0}")]
+    DestroyUdpHandler(io::Error),
 }
 
 // ==========================================================================
@@ -266,11 +270,11 @@ impl Handler {
         event: Event,
     ) -> Result<(), HandleSocketEventsError> {
         if let Some(tcp_stream) = self.tcp_streams.get_mut(event.key) {
-            match tcp_stream.handle_event(poller, event, &mut self.incomings) {
+            match tcp_stream.handle_socket_event(poller, event, &mut self.incomings) {
                 Ok(_) => (),
                 Err(
                     tcp_stream::HandleEventError::ConnectionClosed
-                    | tcp_stream::HandleEventError::Header(_),
+                    | tcp_stream::HandleEventError::DecodeFrameHeader(_),
                 ) => {
                     self.remove_client(poller, event.key)?;
                 }

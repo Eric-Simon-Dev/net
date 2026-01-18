@@ -56,13 +56,15 @@ impl Handler {
         })
     }
 
-    /// Will flush unsent messages before.
+    /// Flush unsent messages before destruction.
     pub fn destroy(&mut self, poller: &Poller) -> Result<(), DestroyError> {
-        // Destroy i/o primitive handlers.
+        // Destroy handlers.
         self.tcp_stream
             .destroy(poller)
-            .map_err(DestroyError::TcpStream)?;
-        self.udp.destroy(poller).map_err(DestroyError::Udp)?;
+            .map_err(DestroyError::DestroyTcpStreamHandler)?;
+        self.udp
+            .destroy(poller)
+            .map_err(DestroyError::DestroyUdpHandler)?;
 
         Ok(())
     }
@@ -71,11 +73,11 @@ impl Handler {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DestroyError {
-    #[error("failed to destroy TCP stream: {0}")]
-    TcpStream(io::Error),
+    #[error("failed to destroy TCP stream handler: {0}")]
+    DestroyTcpStreamHandler(io::Error),
 
-    #[error("failed to destroy UDP: {0}")]
-    Udp(io::Error),
+    #[error("failed to destroy UDP handler: {0}")]
+    DestroyUdpHandler(io::Error),
 }
 
 // ==========================================================================
@@ -177,7 +179,7 @@ impl Handler {
         event: Event,
     ) -> Result<(), HandleSocketEventsError> {
         self.tcp_stream
-            .handle_event(poller, event, &mut self.incomings)?;
+            .handle_socket_event(poller, event, &mut self.incomings)?;
         Ok(())
     }
 }

@@ -6,6 +6,10 @@ use std::{
 use polling::{Event, PollMode, Poller};
 use thiserror::Error;
 
+// ===================================================================================
+// Handler
+// ===================================================================================
+
 pub struct TcpHandler {
     socket: TcpListener,
 }
@@ -15,15 +19,16 @@ impl TcpHandler {
         // Set socket to non-blocking.
         socket.set_nonblocking(true)?;
 
-        // Set readable interest.
-        let current_interest = Event::readable(key);
-        (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
+        // Add socket to poller with read interest.
+        (unsafe { poller.add_with_mode(&socket, Event::readable(key), PollMode::Level) })?;
 
         Ok(Self { socket })
     }
 
     pub fn destroy(&mut self, poller: &Poller) -> io::Result<()> {
+        // Remove socket from poller.
         poller.delete(&self.socket)?;
+
         Ok(())
     }
 }
@@ -47,6 +52,6 @@ impl TcpHandler {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum NextConnectionError {
-    #[error("failed to accept incoming TCP connection: {0}")]
-    Accept(#[from] io::Error),
+    #[error("failed to accept connection: {0}")]
+    AcceptConnection(#[from] io::Error),
 }

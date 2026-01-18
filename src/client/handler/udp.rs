@@ -15,6 +15,10 @@ use crate::protocol::udp::{Header, MAX_PACKET_SIZE, SlidingWindow};
 
 use super::{Incoming, IncomingMessage, OutgoingMessage};
 
+// ===================================================================================
+// Handler
+// ===================================================================================
+
 pub struct UdpHandler {
     send_seq: u64,
     recv_seq_window: SlidingWindow,
@@ -34,7 +38,7 @@ impl UdpHandler {
         // Set socket to non-blocking.
         socket.set_nonblocking(true)?;
 
-        // Set readable interest.
+        // Add socket to poller with read interest.
         let current_interest = Event::readable(key);
         (unsafe { poller.add_with_mode(&socket, current_interest, PollMode::Level) })?;
 
@@ -55,7 +59,7 @@ impl UdpHandler {
             self.send_datagrams(poller)?;
         }
 
-        // Remove socket interest.
+        // Remove socket from poller.
         poller.delete(&self.socket)?;
 
         Ok(())
