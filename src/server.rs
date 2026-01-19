@@ -29,17 +29,17 @@ pub fn listen(
     // Create:
     // - I/O primitives.
     // - Interface.
-    // - Handler (setup I/O behavior and initialize state).
+    // - Handler (setup I/O, create states and buffers).
 
     let tcp = TcpListener::bind(&local_addr)?;
     let udp = UdpSocket::bind(&local_addr)?;
     let poller = Arc::new(Poller::new()?);
 
-    let incomings = mpsc::channel();
-    let outgoings = mpsc::channel();
+    let incoming = mpsc::channel();
+    let outgoing = mpsc::channel();
     let waker = Waker(poller.clone());
 
-    let handler = Handler::create(tcp, udp, &poller, incomings.0, outgoings.1)?;
+    let handler = Handler::create(tcp, udp, &poller, incoming.0, outgoing.1)?;
 
     // ---- Run ----
 
@@ -47,7 +47,7 @@ pub fn listen(
 
     // ----
 
-    Ok((outgoings.0, incomings.1, waker))
+    Ok((outgoing.0, incoming.1, waker))
 }
 
 // ===================================================================================
@@ -58,6 +58,10 @@ type ClientId = usize;
 
 // ---- Incoming ----
 
+/// Data coming from reactor.
+///
+/// Can be *internal* and is then called a **notification**
+/// or *from network* and is then called a **message**.
 #[derive(Debug, Clone)]
 pub enum Incoming {
     Network(IncomingMessage),
@@ -105,6 +109,9 @@ pub struct OutgoingMessage {
     pub guarantees: Guarantees,
 }
 
+/// Sending guarantees.
+///
+/// **Data integrity** and **deduplication** are always guaranteed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Guarantees {
     None,
@@ -125,6 +132,10 @@ pub enum Command {
 pub struct Waker(Arc<Poller>);
 
 impl Waker {
+    /// Should be called after sending through outgoing channel.
+    ///
+    /// You can also skip this and rely on future i/o traffic if latency is not important
+    /// (reactor checks its outgoing receiver at every wakes).
     pub fn wake_reactor(&self) -> io::Result<()> {
         self.0.notify()
     }

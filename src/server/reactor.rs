@@ -3,7 +3,7 @@ use std::{io, sync::Arc, thread};
 use polling::{Events, Poller};
 use thiserror::Error;
 
-use super::handler::*;
+use super::handler::{self, Handler};
 
 pub fn spawn(poller: Arc<Poller>, handler: Handler) {
     thread::spawn(move || match run(poller, handler) {
@@ -25,15 +25,19 @@ fn run(poller: Arc<Poller>, mut handler: Handler) -> Result<(), ReactorError> {
         // Can also *spuriously* wake.
 
         socket_events.clear();
-        poller.wait(&mut socket_events, handler.next_timeout())?;
+        poller
+            .wait(&mut socket_events, handler.next_timeout())
+            .map_err(ReactorError::WaitOnPoller)?;
 
         // ---- Handle ----
 
         handler.handle_timers()?;
-        handler.handle_outgoings(&poller)?;
+        handler.handle_outgoing(&poller)?;
         handler.handle_socket_events(&poller, &socket_events)?;
     }
-    handler.destroy(&poller)?;
+    handler
+        .destroy(&poller)
+        .map_err(ReactorError::DestroyHandler)?;
     Ok(())
 }
 
@@ -42,18 +46,18 @@ fn run(poller: Arc<Poller>, mut handler: Handler) -> Result<(), ReactorError> {
 pub enum ReactorError {
     // ---- Handler ----
     #[error("failed to handle socket events: {0}")]
-    HandleSocketEvents(#[from] HandleSocketEventsError),
+    HandleSocketEvents(#[from] handler::HandleSocketEventsError),
 
     #[error("failed to handle outgoings: {0}")]
-    HandleOutgoings(#[from] HandleOutgoingsError),
+    HandleOutgoings(#[from] handler::HandleOutgoingError),
 
     #[error("failed to handle timers: {0}")]
-    HandleTimers(#[from] HandleTimersError),
+    HandleTimers(#[from] handler::HandleTimersError),
 
     #[error("failed to destroy handler: {0}")]
-    DestroyHandler(#[from] DestroyError),
+    DestroyHandler(io::Error),
 
     // ---- Poller ----
     #[error("failed to wait on poller: {0}")]
-    WaitOnPoller(#[from] io::Error),
+    WaitOnPoller(io::Error),
 }

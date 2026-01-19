@@ -30,7 +30,7 @@ pub fn connect(
     // Create:
     // - I/O primitives.
     // - Interface.
-    // - Handler (setup I/O behavior and initialize state).
+    // - Handler (setup I/O, create states and buffers).
 
     let tcp_stream = TcpStream::connect(&server_addr)?;
     let udp = UdpSocket::bind(&local_addr)?;
@@ -58,6 +58,10 @@ pub fn connect(
 
 // ---- Incoming ----
 
+/// Data coming from reactor.
+///
+/// Can be *internal* and is then called a **notification**
+/// or *from network* and is then called a **message**.
 #[derive(Debug, Clone)]
 pub enum Incoming {
     Network(IncomingMessage),
@@ -95,6 +99,9 @@ pub struct OutgoingMessage {
     pub guarantees: Guarantees,
 }
 
+/// Sending guarantees.
+///
+/// **Data integrity** and **deduplication** are always guaranteed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Guarantees {
     None,
@@ -115,6 +122,10 @@ pub enum Command {
 pub struct Waker(Arc<Poller>);
 
 impl Waker {
+    /// Should be called after sending through outgoing channel.
+    ///
+    /// You can also skip this and rely on future i/o traffic if latency is not important
+    /// (reactor checks its outgoing receiver at every wakes).
     pub fn wake_reactor(&self) -> io::Result<()> {
         self.0.notify()
     }

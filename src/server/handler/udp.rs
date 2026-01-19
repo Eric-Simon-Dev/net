@@ -96,7 +96,7 @@ impl UdpHandler {
 // ==========================================================================
 
 impl UdpHandler {
-    /// Drain `socket` data into `recv_buf`.
+    /// Buffer `socket` incoming packets.
     pub fn read(&mut self) -> Result<(), ReadError> {
         let mut buf = [0; MAX_PACKET_SIZE];
         loop {
@@ -156,12 +156,11 @@ impl UdpHandler {
 pub struct ReadError(#[from] io::Error);
 
 // ==========================================================================
-// Incoming
+// Next incoming
 // ==========================================================================
 
 impl UdpHandler {
-    /// Return message from `recv_buf`.
-    pub fn incoming(&mut self) -> Option<IncomingMessage> {
+    pub fn next_incoming_message(&mut self) -> Option<IncomingMessage> {
         self.recv_queue.pop_back()
     }
 }
@@ -171,7 +170,7 @@ impl UdpHandler {
 // ==========================================================================
 
 impl UdpHandler {
-    /// Fill `socket` from `send_buf` data.
+    /// Send queued outgoing data.
     pub fn write(&mut self, poller: &Poller) -> Result<(), WriteError> {
         while let Some((datagram, addr)) = self.send_queue.pop_back() {
             match self.socket.send_to(&datagram, addr) {
@@ -205,16 +204,15 @@ impl UdpHandler {
 pub struct WriteError(#[from] io::Error);
 
 // ==========================================================================
-// Outgoing
+// Enqueue outgoing message
 // ==========================================================================
 
 impl UdpHandler {
-    /// Enqueue message into `send_buf`.
-    pub fn outgoing(
+    pub fn enqueue_outgoing_message(
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
-    ) -> Result<(), OutgoingError> {
+    ) -> Result<(), EnqueueOutgoingMessageError> {
         let client = &mut self.clients[message.client_id];
 
         // Create & Buffer header.
@@ -240,7 +238,7 @@ impl UdpHandler {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum OutgoingError {
+pub enum EnqueueOutgoingMessageError {
     #[error("failed to update interest: {0}")]
     UpdateInterest(#[from] io::Error),
 }

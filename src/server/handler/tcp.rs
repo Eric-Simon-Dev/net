@@ -58,7 +58,7 @@ impl TcpHandler {
 // ==========================================================================
 
 impl TcpHandler {
-    /// Drain `socket` connections into `recv_queue`.
+    /// Buffer `socket` incoming connections.
     pub fn read(&mut self) -> Result<(), ReadError> {
         loop {
             match self.socket.accept() {
@@ -75,12 +75,11 @@ impl TcpHandler {
 pub struct ReadError(#[from] io::Error);
 
 // ==========================================================================
-// Incoming
+// Next incoming
 // ==========================================================================
 
 impl TcpHandler {
-    /// Return connection from `recv_queue`.
-    pub fn incoming(&mut self) -> Option<(TcpStream, SocketAddr)> {
+    pub fn next_incoming_connection(&mut self) -> Option<(TcpStream, SocketAddr)> {
         self.read_queue.pop_back()
     }
 }

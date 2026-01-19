@@ -28,14 +28,14 @@ impl ClientRegistry {
     }
 
     pub fn add(&mut self, addr: SocketAddr) -> usize {
-        // Create client.
+        // Create client entry.
         let client = Client {
             addr,
             send_seq: 0,
             recv_seq_window: SlidingWindow::new(),
         };
 
-        // Update registry.
+        // Add it to structures.
         let key = self.clients.insert(client);
         self.addr_to_key.insert(addr, key);
 
@@ -43,7 +43,7 @@ impl ClientRegistry {
     }
 
     pub fn remove(&mut self, key: usize) -> Client {
-        // Update registry.
+        // Remove client entry from structures.
         let client = self.clients.remove(key);
         self.addr_to_key.remove(&client.addr);
 

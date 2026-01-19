@@ -13,13 +13,13 @@ use thiserror::Error;
 
 use crate::protocol;
 
-use super::{Command, Guarantees, Incoming, IncomingMessage, Outgoing, OutgoingMessage};
+use super::*;
 
 use tcp_stream::TcpStreamHandler;
 use udp::UdpHandler;
 
 // ---- Poller keys ----
-// `usize::MAX` is reserved for internal use from the crate.
+// `usize::MAX` is reserved for internal use by polling crate.
 const TCP_STREAM_KEY: usize = usize::MAX - 1;
 const UDP_KEY: usize = usize::MAX - 2;
 

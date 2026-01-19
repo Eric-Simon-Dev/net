@@ -91,7 +91,7 @@ impl TcpStreamHandler {
 // ==========================================================================
 
 impl TcpStreamHandler {
-    /// Drain `socket` data into `recv_buf`.
+    /// Buffer `socket` incoming data.
     pub fn read(&mut self) -> Result<(), ReadError> {
         let mut buf = [0; 4096];
         loop {
@@ -128,12 +128,13 @@ pub enum ReadError {
 }
 
 // ==========================================================================
-// Incoming
+// Next incoming message
 // ==========================================================================
 
 impl TcpStreamHandler {
-    /// Return message from `recv_buf`.
-    pub fn incoming(&mut self) -> Result<Option<IncomingMessage>, IncomingError> {
+    pub fn next_incoming_message(
+        &mut self,
+    ) -> Result<Option<IncomingMessage>, NextIncomingMessageError> {
         match Header::split_frame_from(&mut self.recv_buf) {
             Ok((header, payload)) => Ok(Some(IncomingMessage {
                 data: payload,
@@ -148,7 +149,7 @@ impl TcpStreamHandler {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum IncomingError {
+pub enum NextIncomingMessageError {
     #[error("failed to decode header: {0}")]
     DecodeHeader(#[from] DecodeHeaderError),
 }
@@ -158,7 +159,7 @@ pub enum IncomingError {
 // ==========================================================================
 
 impl TcpStreamHandler {
-    /// Fill `socket` from `send_buf` data.
+    /// Send queued outgoing data.
     pub fn write(&mut self, poller: &Poller) -> Result<(), WriteError> {
         while let Some(mut frame) = self.send_queue.pop_back() {
             match self.socket.write(&frame) {
@@ -204,16 +205,15 @@ pub enum WriteError {
 }
 
 // ==========================================================================
-// Outgoing
+// Enqueue outgoing message
 // ==========================================================================
 
 impl TcpStreamHandler {
-    /// Enqueue message into `send_buf`.
-    pub fn outgoing(
+    pub fn enqueue_outgoing_message(
         &mut self,
         poller: &Poller,
         message: OutgoingMessage,
-    ) -> Result<(), OutgoingError> {
+    ) -> Result<(), EnqueueOutgoingMessageError> {
         // Create & Buffer header.
         let header = Header::new(message.data.len(), message.channel)?;
         header.put_into(&mut self.send_buf);
@@ -232,7 +232,7 @@ impl TcpStreamHandler {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum OutgoingError {
+pub enum EnqueueOutgoingMessageError {
     #[error("failed to create header: {0}")]
     CreateHeader(#[from] CreateHeaderError),
 
