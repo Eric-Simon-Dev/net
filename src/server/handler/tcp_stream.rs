@@ -10,7 +10,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 use thiserror::Error;
 
-use crate::protocol::tcp::{Header, CreateHeaderError, DecodeHeaderError};
+use crate::protocol::tcp::{CreateHeaderError, DecodeHeaderError, Header};
 
 use super::{IncomingMessage, OutgoingMessage};
 

@@ -1,66 +1,102 @@
-//! Transport layer interface for client/server.
+//! Network library for client-server focused on simplicity.
 //!
-//! - Doesn't support mixing IPv4 and IPv6 sockets.
+//! - **Custom protocols**: This crate defines custom transport protocols
+//! over both TCP and UDP. These protocols are not public specifications
+//! thus both your client and server should use this crate and the same version of it.
 //!
-//! ## Example
+//! - **Separate single thread**: Network-related operations are run
+//! on a single separate thread called the reactor.
+//!
+//! # Example
 //!
 //! ```
-//! const SERVER_ADDR: &'static str = "0:12012";
-//! const CLIENT_ADDR: &'static str = "0:0";
-//!
-//! fn server() {
-//!     use net::server::{listen, Incoming, Outgoing, Command, Notification};
-//!
-//!     // bind to `SERVER_ADDR`
-//!     let (outgoings, incomings, waker) = listen(SERVER_ADDR).unwrap();
-//!
-//!     // wait for connection
-//!     assert!(matches!(incomings.recv().unwrap(), Incoming::Internal(Notification::Connection { .. })));
-//!
-//!     // wait for "hello" message
-//!     let Incoming::Network(message) = incomings.recv().unwrap() else {
-//!         panic!("should receive a message");
-//!     };
-//!     assert_eq!(message.data[..], "hello".as_bytes()[..]);
-//!
-//!     // wait for disconnection
-//!     assert!(matches!(incomings.recv().unwrap(), Incoming::Internal(Notification::Disconnection { .. })));
-//!
-//!     // shutdown
-//!     outgoings.send(Outgoing::Internal(Command::Shutdown)).unwrap();
-//!     waker.wake_reactor().unwrap();
-//! }
-//!
-//! fn client() {
-//!     use net::client::{connect, OutgoingMessage, Outgoing, Command, Guarantees};
-//!     use bytes::BytesMut;
-//!
-//!     // bind to `CLIENT_ADDR` & connect to `SERVER_ADDR`
-//!     let (outgoings, incomings, waker) = connect(CLIENT_ADDR, SERVER_ADDR).unwrap();
-//!
-//!     // send "hello" message
-//!     outgoings.send(Outgoing::Network(OutgoingMessage {
-//!         data: BytesMut::from("hello".as_bytes()),
-//!         channel: 0,
-//!         guarantees : Guarantees::Delivery,
-//!     })).unwrap();
-//!     waker.wake_reactor().unwrap();
-//!
-//!     // Wait for socket to be ready and thus messages to be sent.
-//!     std::thread::sleep(std::time::Duration::from_millis(100));
-//! 
-//!     // shutdown
-//!     outgoings.send(Outgoing::Internal(Command::Shutdown)).unwrap();
-//!     waker.wake_reactor().unwrap();
-//! }
-//!
 //! # std::thread::scope(|s| {
 //! #     std::thread::Builder::new().name("server".to_string()).spawn_scoped(s, server);
 //! #     // Give server time to start so client connection succeeds.
 //! #     std::thread::sleep(std::time::Duration::from_millis(100));
 //! #     std::thread::Builder::new().name("client".to_string()).spawn_scoped(s, client);
 //! # });
+//! const SERVER_ADDR: &'static str = "0:12012";
+//! const CLIENT_ADDR: &'static str = "0:0";
+//!
+//! fn server() {
+//!     // Use `net::server` for server...
+//!     use net::server::{listen, Incoming, Outgoing, Command, Notification};
+//!
+//!     // Interface:
+//!     // - `incoming`: For receiving messages from network or notifications from reactor.
+//!     // - `outgoing`: For sending messages to network or commands to reactor.
+//!     // - `waker` : For waking reactor (sending to `outgoing` does not wake it).
+//!
+//!     let (outgoing, incoming, waker) = listen(SERVER_ADDR).unwrap();
+//!
+//!     // Test:
+//!     // 1. Wait for connection notification.
+//!     // 2. Wait for "hello" message.
+//!     // 3. Wait for disconnection notification.
+//!     // 4. Shutdown reactor.
+//!
+//!     let Incoming::Internal(Notification::Connection { .. }) = incoming.recv().unwrap() else {
+//!         panic!("should receive connection notification");
+//!     };
+//!
+//!     let Incoming::Network(message) = incoming.recv().unwrap() else {
+//!         panic!("should receive a message");
+//!     };
+//!     assert_eq!(message.data[..], "hello".as_bytes()[..]);
+//!
+//!     let Incoming::Internal(Notification::Disconnection { .. }) = incoming.recv().unwrap() else {
+//!         panic!("should receive connection notification");
+//!     };
+//!
+//!     outgoing.send(Outgoing::Internal(Command::Shutdown)).unwrap();
+//!     waker.wake_reactor().unwrap();
+//! }
+//!
+//! fn client() {
+//!     // ... and `net::client` for client.
+//!     use net::client::{connect, OutgoingMessage, Outgoing, Command, Guarantees};
+//!     use bytes::BytesMut;
+//!
+//!     let (outgoing, incoming, waker) = connect(CLIENT_ADDR, SERVER_ADDR).unwrap();
+//!
+//!     // Test:
+//!     // 1. Send "hello" message.
+//!     // 2. Shutdown reactor.
+//!
+//!     outgoing.send(Outgoing::Network(OutgoingMessage {
+//!         data: BytesMut::from("hello".as_bytes()),
+//!         channel: 0,
+//!         guarantees : Guarantees::Delivery,
+//!     })).unwrap();
+//!     waker.wake_reactor().unwrap();
+//!
+//!     // Messages are sent only when socket is ready.
+//!     // Shutting down immediately after can drop to-be-sent messages.
+//!     std::thread::sleep(std::time::Duration::from_millis(1));
+//!
+//!     outgoing.send(Outgoing::Internal(Command::Shutdown)).unwrap();
+//!     waker.wake_reactor().unwrap();
+//! }
 //! ```
+//!
+//! # Roadmap
+//!
+//! **Questions**:
+//!
+//! - Remove dependancy on [`bytes::BytesMut`] ?
+//! Quite practical to use and well supported so idk.
+//!
+//! - Remove custom protocols for public specifications ?
+//! Depends on whether I need specialized protocols.
+//!
+//! **Improvements**:
+//!
+//! - Parallelize network operations handling.
+//!
+//! - Mixing IPv4 and IPv6 sockets.
+//!
+//! - Remove waker.
 
 mod doc {
     //! # Naming convention
@@ -78,10 +114,10 @@ mod doc {
 mod memo {
     //! # Sockets
     //!
-    //! Sockets are:
+    //! Sockets are assigned to each:
     //! - `TcpListener`.
     //! - `UdpSocket`.
-    //! - Each `TcpStream`.
+    //! - `TcpStream`.
     //!
     //! # Polling
     //!
@@ -89,6 +125,8 @@ mod memo {
     //! To avoid waiting or spinning on the sockets.
     //!
     //! Use [`polling`] crate for that.
+    //!
+    //! Problem: Can't easely wait on channel and on OS polling at the same time...
     //!
     //! # Protocols
     //!
