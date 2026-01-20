@@ -37,7 +37,7 @@
 //!     // 4. Shutdown reactor.
 //!
 //!     let Incoming::Internal(Notification::Connection { .. }) = incoming.recv().unwrap() else {
-//!         panic!("should receive connection notification");
+//!         panic!("should receive a connection notification");
 //!     };
 //!
 //!     let Incoming::Network(message) = incoming.recv().unwrap() else {
@@ -46,7 +46,7 @@
 //!     assert_eq!(message.data[..], "hello".as_bytes()[..]);
 //!
 //!     let Incoming::Internal(Notification::Disconnection { .. }) = incoming.recv().unwrap() else {
-//!         panic!("should receive connection notification");
+//!         panic!("should receive a disconnection notification");
 //!     };
 //!
 //!     outgoing.send(Outgoing::Internal(Command::Shutdown)).unwrap();

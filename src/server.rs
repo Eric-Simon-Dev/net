@@ -41,9 +41,9 @@ pub fn listen(
 
     let handler = Handler::create(tcp, udp, &poller, incoming.0, outgoing.1)?;
 
-    // ---- Run ----
+    // ---- Spawn reactor ----
 
-    reactor::spawn(poller, handler);
+    reactor::spawn(poller, handler)?;
 
     // ----
 
