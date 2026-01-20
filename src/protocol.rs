@@ -1,34 +1,74 @@
-//! # Clients (server only)
+//! # Always guaranteed
+//! 
+//! ## Multiplexing (TCP/UDP)
 //!
-//! Messages to and from unregistered clients are dropped.
+//! **Definition**: *Messages should have their own channel*.
+//! 
+//! **Implementation**: Channel byte in headers.
+//! 
+//! **Notes**:
+//! - Limited to 256 channels.
+//! 
+//! ## Boundaries (TCP)
 //!
-//! # Size
+//! **Definition**: *No merge or split from caller perspective,
+//! one-to-one correspondance between send and receive (if no loss)*.
+//! 
+//! **Implementation**: Append a payload lenth prefix per message inside header.
+//! 
+//! **Notes**:
+//! - An error during length parsing of one message invalidate the whole stream.
 //!
-//! Messages with guarantees None but too big to fit in 1 packet will be using TCP.
+//! ## Deduplication (UDP)
+//! 
+//! **Definition**: *Sent messages should be received at most once*.
 //!
-//! # Multiplexing
+//! **Implementation**: Append an increasing sequence number per message.
+//! Then use a sliding window per connection to identify already received message.
+//! 
+//! **Notes**:
+//! - Packets that are too old are dropped. Adjust the sliding margin accordingly.
 //!
-//! Each message (TCP or UDP) also send a channel byte
+//! # Optionnally guaranteed
+//! 
+//! For now all optional guarantees or big payloads fallback to TCP stream.
+//! So it's working but not as efficiently as it should be.
+//! 
+//! ## Order (UDP, unimplemented)
 //!
-//! # Boundaries
+//! **Definition**: *Sent messages with `Order` guarantee should be received in the same order they were sent,
+//! relative to their channel*.
+//! 
+//! **Implementation**: Might use sequence numbers, but it should be per channel ?, timers, etc.
 //!
-//! TCP boundaries are ensured by a payload lenght prefix at the beginning of the frame.
-//! UDP messages are limited to fit one packet and thus don't need a protocol for that.
+//! ## Delivery (UDP, unimplemented)
+//! 
+//! **Definition**: *Sent messages with `Delivery` guarantee should be retried until receival acknolegment.
+//! Retrial should be done until connection timed out.*
 //!
-//! # Deduplication
-//!
-//! UDP messages are prefixed with a seq number (increasing with each message)
-//! that is checked upon receival with a sliding window
-//! that check the last 64 packets (it's a bitmap, could be different) under highest received packet.
-//! Older packets are dropped.
-//!
-//! # Order
-//!
-//! For UDP, might use the seq number but per channel and store temporaly (using timers too maybe)
-//!
-//! # Delivery
-//!
-//! Use ack numbers, highest pckts received, piggy-back on other packets, etc.
+//! **Implementation**: Might use acknoledgment numbers, highest ack received, piggy-back on other packets, etc.
+
+mod memo {
+    //! # TCP/UDP Guarantees
+    //!
+    //! **Integrity** is guaranteed by both.
+    //!
+    //! TCP guarantees:
+    //! - **Deduplication**: Each message is received exactly once.
+    //! - **Delivery**: Sender is notified of delivery.
+    //! - **Order**: Messages arrive in sending order.
+    //!
+    //! TCP does *not* guarantee:
+    //! - **Boundaries**: Messages are merged into a continuous stream.
+    //!
+    //! UDP guarantees:
+    //! - **Boundaries**: Messages are not merged or split.
+    //!
+    //! UDP does *not* guarantee:
+    //! - **Deduplication**: Duplicated messages may be received.
+    //! - **Delivery**: Sender is not notified of delivery. (fire-and-forget).
+    //! - **Order**: Messages may be received out of sending order.
+}
 
 pub mod tcp;
 pub mod udp;

@@ -140,26 +140,6 @@ mod memo {
     //! RUDP (Reliable UDP) are protocol overlays over UDP:
     //! They implement guarantees between UDP and TCP and optimize performance for them.
     //!
-    //! # TCP/UDP Guarantees
-    //!
-    //! **Integrity** is guaranteed by both.
-    //!
-    //! TCP guarantees:
-    //! - **Deduplication**: Each message is received exactly once.
-    //! - **Delivery**: Sender is notified of delivery.
-    //! - **Order**: Messages arrive in sending order.
-    //!
-    //! TCP does *not* guarantee:
-    //! - **Boundaries**: Messages are merged into a continuous stream.
-    //!
-    //! UDP guarantees:
-    //! - **Boundaries**: Messages are not merged or split.
-    //!
-    //! UDP does *not* guarantee:
-    //! - **Deduplication**: Duplicated messages may be received.
-    //! - **Delivery**: Sender is not notified of delivery. (fire-and-forget).
-    //! - **Order**: Messages may be received out of sending order.
-    //!
     //! ## IPv4 & IPv6
     //!
     //! - **Dual-stack socket**: Handles both IP versions, but not always available.
