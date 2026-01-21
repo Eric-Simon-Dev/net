@@ -16,7 +16,7 @@ use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
 use super::{IncomingMessage, OutgoingMessage};
 
-use client_state::ClientRegistry;
+use client_state::ClientStateRegistry;
 
 // ===================================================================================
 // Handler
@@ -24,7 +24,7 @@ use client_state::ClientRegistry;
 
 pub struct UdpHandler {
     // ---- Clients ----
-    pub clients: ClientRegistry,
+    pub clients: ClientStateRegistry,
 
     // ---- Socket ----
     socket: UdpSocket,
@@ -54,7 +54,7 @@ impl UdpHandler {
         // ----
 
         Ok(Self {
-            clients: ClientRegistry::new(),
+            clients: ClientStateRegistry::new(),
             socket,
             interest,
             recv_buf: BytesMut::new(),
