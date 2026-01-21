@@ -3,32 +3,34 @@
 mod client_state;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io,
     net::{SocketAddr, UdpSocket},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
+use slab::Slab;
 use thiserror::Error;
 
 use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
 use super::{IncomingMessage, OutgoingMessage};
 
-use client_state::ClientStateRegistry;
+use client_state::ClientState;
 
 // ===================================================================================
 // Handler
 // ===================================================================================
 
 pub struct UdpHandler {
-    // ---- Clients ----
-    pub clients: ClientStateRegistry,
-
     // ---- Socket ----
     socket: UdpSocket,
     interest: Event,
+
+    // ---- States ----
+    clients: Slab<ClientState>,
+    addr_to_key: HashMap<SocketAddr, usize>,
 
     // ---- Buffers ----
     recv_buf: BytesMut,
@@ -54,9 +56,10 @@ impl UdpHandler {
         // ----
 
         Ok(Self {
-            clients: ClientStateRegistry::new(),
             socket,
             interest,
+            clients: Slab::new(),
+            addr_to_key: HashMap::new(),
             recv_buf: BytesMut::new(),
             recv_queue: VecDeque::new(),
             send_buf: BytesMut::new(),
@@ -92,6 +95,24 @@ impl UdpHandler {
 }
 
 // ==========================================================================
+// Client management
+// ==========================================================================
+
+impl UdpHandler {
+    pub fn add_client_state(&mut self, addr: SocketAddr) -> usize {
+        let key = self.clients.insert(ClientState::new(addr));
+        self.addr_to_key.insert(addr, key);
+        key
+    }
+
+    pub fn remove_client_state(&mut self, key: usize) -> ClientState {
+        let client = self.clients.remove(key);
+        self.addr_to_key.remove(&client.addr);
+        client
+    }
+}
+
+// ==========================================================================
 // Read
 // ==========================================================================
 
@@ -122,7 +143,7 @@ impl UdpHandler {
 
     fn process_incoming_datagram(&mut self, buf: &[u8], addr: SocketAddr) {
         // Drop if `addr` unregistered.
-        let Some(key) = self.clients.get_key(&addr) else {
+        let Some(key) = self.addr_to_key.get(&addr).copied() else {
             return;
         };
         let client = &mut self.clients[key];
@@ -134,7 +155,7 @@ impl UdpHandler {
         let payload = &buf[header_wire_size..];
 
         // Drop if header seq number invalid.
-        if !client.recv_seq_window.accept(header.seq) {
+        if !client.seq_window.accept(header.seq) {
             return;
         }
 
@@ -217,10 +238,10 @@ impl UdpHandler {
 
         // Create & Encode header.
         let header = Header {
-            seq: client.send_seq,
+            seq: client.seq,
             channel: message.channel,
         };
-        client.send_seq += 1;
+        client.seq += 1;
         header.encode_into(&mut self.send_buf);
 
         // Buffer payload.

@@ -151,6 +151,8 @@ mod memo {
     //! - **Session**: Continuity of the exchanges (authentication, reconnection, etc.).  
 }
 
+// TODO: Recheck server module later, correct and copy to client (it still has old code).
+
 pub mod client;
 pub mod server;
 

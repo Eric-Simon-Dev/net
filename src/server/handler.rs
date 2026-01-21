@@ -103,20 +103,20 @@ impl Handler {
             tcp_stream_key,
         )?);
 
-        // Add its entry in UDP.
-        let udp_entry_key = self.udp.clients.add(addr);
+        // Add its state into UDP.
+        let udp_client_state_key = self.udp.add_client_state(addr);
 
-        debug_assert_eq!(tcp_stream_key, udp_entry_key);
+        debug_assert_eq!(tcp_stream_key, udp_client_state_key);
 
-        Ok(udp_entry_key)
+        Ok(udp_client_state_key)
     }
 
     fn remove_client(&mut self, poller: &Poller, key: usize) -> io::Result<()> {
         // Remove its TCP stream.
         self.tcp_streams.remove(key).destroy(poller)?;
 
-        // Remove its entry from UDP.
-        self.udp.clients.remove(key);
+        // Remove its state from UDP.
+        self.udp.remove_client_state(key);
 
         Ok(())
     }
