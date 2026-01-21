@@ -1,6 +1,6 @@
 //! Datagram = header + payload.
 
-mod client;
+mod client_state;
 
 use std::{
     collections::VecDeque,
@@ -16,7 +16,7 @@ use crate::protocol::udp::{Header, MAX_PACKET_SIZE};
 
 use super::{IncomingMessage, OutgoingMessage};
 
-use client::ClientRegistry;
+use client_state::ClientRegistry;
 
 // ===================================================================================
 // Handler

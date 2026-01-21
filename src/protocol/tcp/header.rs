@@ -13,7 +13,8 @@ pub struct Header {
 }
 
 // ---- Invariants ----
-pub const MAX_PAYLOAD_LENGTH: usize = 1_048_576; // 1 MiB (encodable into a u32)
+pub const MAX_PAYLOAD_LENGTH: usize = 1_048_576; // 1 MiB
+const _: () = assert!(MAX_PAYLOAD_LENGTH <= u32::MAX as usize);
 
 // ---- Wire format ----
 const PAYLOAD_LENGTH_RANGE: std::ops::Range<usize> = 0..4;
