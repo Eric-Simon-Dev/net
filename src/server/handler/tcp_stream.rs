@@ -10,7 +10,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 use thiserror::Error;
 
-use crate::protocol::tcp::{CreateHeaderError, DecodeHeaderError, Header};
+use crate::protocol::tcp::{DecodeHeaderError, EncodeHeaderError, Header};
 
 use super::{IncomingMessage, OutgoingMessage};
 
@@ -135,13 +135,27 @@ impl TcpStreamHandler {
     pub fn next_incoming_message(
         &mut self,
     ) -> Result<Option<IncomingMessage>, NextIncomingMessageError> {
-        match Header::split_frame_from(&mut self.recv_buf) {
-            Ok((header, payload)) => Ok(Some(IncomingMessage {
-                data: payload,
-                channel: header.channel,
-                client_id: self.key,
-            })),
+        match Header::decode_from(&self.recv_buf) {
+            // Decoded and complete frame available.
+            Ok((header, wire_size))
+                if self.recv_buf.len() >= header.payload_length as usize + wire_size =>
+            {
+                let _header = self.recv_buf.split_to(wire_size);
+                let payload = self.recv_buf.split_to(header.payload_length);
+                Ok(Some(IncomingMessage {
+                    client_id: self.key,
+                    data: payload,
+                    channel: header.channel,
+                }))
+            }
+
+            // Decoded but complete frame unavailable.
+            Ok(_) => Ok(None),
+
+            // Not enough bytes to decode.
             Err(DecodeHeaderError::BufferTooSmall) => Ok(None),
+
+            // Invalid header data.
             Err(e) => Err(e.into()),
         }
     }
@@ -214,9 +228,12 @@ impl TcpStreamHandler {
         poller: &Poller,
         message: OutgoingMessage,
     ) -> Result<(), EnqueueOutgoingMessageError> {
-        // Create & Buffer header.
-        let header = Header::new(message.data.len(), message.channel)?;
-        header.put_into(&mut self.send_buf);
+        // Create & Encode header.
+        let header = Header {
+            payload_length: message.data.len(),
+            channel: message.channel,
+        };
+        header.encode_into(&mut self.send_buf)?;
 
         // Buffer payload.
         self.send_buf.put(message.data);
@@ -233,8 +250,8 @@ impl TcpStreamHandler {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum EnqueueOutgoingMessageError {
-    #[error("failed to create header: {0}")]
-    CreateHeader(#[from] CreateHeaderError),
+    #[error("failed to encode header: {0}")]
+    EncodeHeader(#[from] EncodeHeaderError),
 
     #[error("failed to update interest: {0}")]
     UpdateInterest(#[from] io::Error),

@@ -7,7 +7,7 @@ use super::handler::{self, Handler};
 
 pub fn spawn(poller: Arc<Poller>, handler: Handler) -> io::Result<()> {
     thread::Builder::new()
-        .name("network reactor".to_string())
+        .name("server-side network reactor".to_string())
         .spawn(move || match run(poller, handler) {
             Ok(()) => println!("reactor shut down"),
             Err(e) => eprintln!("reactor crashed: {e}"),

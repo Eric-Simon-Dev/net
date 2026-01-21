@@ -103,7 +103,7 @@ impl UdpHandler {
             match self.socket.recv_from(&mut buf) {
                 // Receive `n` bytes from `addr`.
                 Ok((n, addr)) => {
-                    self.process_incoming_datagram(&buf, n, addr);
+                    self.process_incoming_datagram(&buf[..n], addr);
                 }
 
                 // Socket/Data unavailable (no read).
@@ -120,32 +120,32 @@ impl UdpHandler {
         }
     }
 
-    fn process_incoming_datagram(&mut self, buf: &[u8], n: usize, addr: SocketAddr) {
+    fn process_incoming_datagram(&mut self, buf: &[u8], addr: SocketAddr) {
         // Drop if `addr` unregistered.
         let Some(key) = self.clients.get_key(&addr) else {
             return;
         };
         let client = &mut self.clients[key];
 
-        // Buffer datagram.
-        self.recv_buf.put(&buf[..n]);
-        let mut datagram = self.recv_buf.split();
-
-        // Drop if header unparsable.
-        let Ok(header) = Header::split_from(&mut datagram) else {
+        // Drop if header undecodable.
+        let Ok((header, header_wire_size)) = Header::decode_from(buf) else {
             return;
         };
-        let payload = datagram;
+        let payload = &buf[header_wire_size..];
 
         // Drop if header seq number invalid.
-        if !client.recv_seq_window.check_and_mark(header.seq()) {
+        if !client.recv_seq_window.check_and_mark(header.seq) {
             return;
         }
+
+        // Buffer payload.
+        self.recv_buf.put(payload);
+        let payload = self.recv_buf.split();
 
         self.recv_queue.push_front(IncomingMessage {
             client_id: key,
             data: payload,
-            channel: header.channel(),
+            channel: header.channel,
         });
     }
 }
@@ -215,13 +215,13 @@ impl UdpHandler {
     ) -> Result<(), EnqueueOutgoingMessageError> {
         let client = &mut self.clients[message.client_id];
 
-        // Create & Buffer header.
-        let header = Header::Classic {
-            channel: message.channel,
+        // Create & Encode header.
+        let header = Header {
             seq: client.send_seq,
+            channel: message.channel,
         };
         client.send_seq += 1;
-        header.put_into(&mut self.send_buf);
+        header.encode_into(&mut self.send_buf);
 
         // Buffer payload.
         self.send_buf.put(message.data);

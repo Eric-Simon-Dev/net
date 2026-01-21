@@ -1,114 +1,86 @@
 use bytes::{BufMut, BytesMut};
 use thiserror::Error;
 
-/// Maximum allowed payload length in bytes.
-///
-/// This limit is enforced while creating and decoding headers.
-pub const MAX_PAYLOAD_LENGTH: u32 = 1_048_576; // 1 MiB
-
-// ---- Wire format ----
-const PAYLOAD_LENGTH_RANGE: std::ops::Range<usize> = 0..4;
-const CHANNEL_INDEX: usize = 4;
-const LEN: usize = 5;
-
 /// # Wire format
 /// ```text
 /// byte 0..4 : payload length (u32, big-endian)
 /// byte 4    : channel
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Header {
-    payload_length: u32,
+    pub payload_length: usize,
     pub channel: u8,
 }
 
-impl Header {
-    /// # Errors
-    /// - [`CreateError::PayloadTooBig`] if the provided payload
-    ///   length exceeds [`crate::MAX_PAYLOAD_LENGTH`].
-    pub fn new(payload_length: usize, channel: u8) -> Result<Self, CreateError> {
-        let Ok(payload_length) = u32::try_from(payload_length) else {
-            return Err(CreateError::PayloadTooBig);
-        };
+// ---- Invariants ----
+pub const MAX_PAYLOAD_LENGTH: usize = 1_048_576; // 1 MiB (encodable into a u32)
 
-        if payload_length > MAX_PAYLOAD_LENGTH {
-            return Err(CreateError::PayloadTooBig);
+// ---- Wire format ----
+const PAYLOAD_LENGTH_RANGE: std::ops::Range<usize> = 0..4;
+const CHANNEL_INDEX: usize = 4;
+const LEN: usize = 5;
+
+// =============================================================================
+// Encode
+// =============================================================================
+
+impl Header {
+    /// Returns header wire size.
+    pub fn encode_into(&self, buf: &mut BytesMut) -> Result<usize, EncodeError> {
+        if self.payload_length > MAX_PAYLOAD_LENGTH {
+            return Err(EncodeError::PayloadTooBig);
         }
 
-        Ok(Self {
-            payload_length,
-            channel,
-        })
+        let mut encoded_header = [0u8; LEN];
+        let payload_length = self.payload_length as u32;
+        encoded_header[PAYLOAD_LENGTH_RANGE].copy_from_slice(&payload_length.to_be_bytes());
+        encoded_header[CHANNEL_INDEX] = self.channel;
+
+        buf.put(&encoded_header[..]);
+
+        Ok(LEN)
     }
 }
 
+#[derive(Debug, Error)]
+pub enum EncodeError {
+    #[error("payload too big")]
+    PayloadTooBig,
+}
+
+// =============================================================================
+// Decode
+// =============================================================================
+
 impl Header {
-    /// Encodes and appends this header to the end of `buf`.
-    pub fn put_into(&self, buf: &mut BytesMut) {
-        // ---- Encoding ----
-        let mut header_bytes = [0; LEN];
-        header_bytes[PAYLOAD_LENGTH_RANGE].copy_from_slice(&self.payload_length.to_be_bytes());
-        header_bytes[CHANNEL_INDEX] = self.channel;
-
-        // Append encoded header.
-        buf.put(&header_bytes[..]);
-    }
-
-    /// Decodes a header and removes a complete frame from the front of `buf`.
-    ///
-    /// # Errors
-    /// - [`DecodeError::BufferTooSmall`] if the buffer does not
-    ///   contain enough bytes to decode a full frame.
-    /// - [`DecodeError::PayloadTooBig`] if the decoded payload
-    ///   length exceeds [`crate::MAX_PAYLOAD_LENGTH`].
-    pub fn split_frame_from(buf: &mut BytesMut) -> Result<(Self, BytesMut), DecodeError> {
+    /// Returns header and its wire size.
+    pub fn decode_from(buf: &[u8]) -> Result<(Self, usize), DecodeError> {
         if buf.len() < LEN {
             return Err(DecodeError::BufferTooSmall);
         }
 
-        // Decode and validate payload length without consuming bytes.
         let payload_length = u32::from_be_bytes(buf[PAYLOAD_LENGTH_RANGE].try_into().unwrap());
+        let payload_length = payload_length as usize;
         if payload_length > MAX_PAYLOAD_LENGTH {
             return Err(DecodeError::PayloadTooBig);
         }
 
-        // Check whether the full frame is present.
-        if buf.len() < LEN + payload_length as usize {
-            return Err(DecodeError::BufferTooSmall);
-        }
+        let channel = buf[CHANNEL_INDEX];
 
-        // Remove encoded header.
-        let header_bytes = buf.split_to(LEN);
-
-        // ---- Decoding ----
-        let header = Header {
-            payload_length: u32::from_be_bytes(
-                header_bytes[PAYLOAD_LENGTH_RANGE].try_into().unwrap(),
-            ),
-            channel: header_bytes[CHANNEL_INDEX],
+        let header = Self {
+            payload_length,
+            channel,
         };
 
-        // Remove payload.
-        let payload = buf.split_to(payload_length as usize);
-
-        Ok((header, payload))
+        Ok((header, LEN))
     }
-}
-
-// ---- Errors ----
-
-#[derive(Debug, Error)]
-pub enum CreateError {
-    #[error("provided payload length exceeds `crate::MAX_PAYLOAD_LENGTH`")]
-    PayloadTooBig,
 }
 
 #[derive(Debug, Error)]
 pub enum DecodeError {
-    #[error("buffer does not contain enough bytes to decode a full frame")]
+    #[error("buffer too small")]
     BufferTooSmall,
 
-    #[error("decoded payload length exceeds `crate::MAX_PAYLOAD_LENGTH`")]
+    #[error("payload too big")]
     PayloadTooBig,
 }

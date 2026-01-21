@@ -11,7 +11,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use polling::{Event, PollMode, Poller};
 use thiserror::Error;
 
-use crate::protocol::tcp::{CreateHeaderError, DecodeHeaderError, Header};
+use crate::protocol::tcp::{DecodeHeaderError, EncodeHeaderError, Header};
 
 use super::{Incoming, IncomingMessage, OutgoingMessage};
 
@@ -74,16 +74,18 @@ impl TcpStreamHandler {
         poller: &Poller,
         message: OutgoingMessage,
     ) -> Result<(), QueueOutgoingMessageError> {
-        // Create header.
-        let header = Header::new(message.data.len(), message.channel)?;
+        // Create & Encode header.
+        let header = Header {
+            payload_length: message.data.len(),
+            channel: message.channel,
+        };
+        header.encode_into(&mut self.send_buf)?;
 
-        // Buffer frame.
-        header.put_into(&mut self.send_buf);
+        // Buffer payload.
         self.send_buf.put(message.data);
-        let frame = self.send_buf.split().freeze();
 
-        // Queue frame.
-        self.send_queue.push_front(frame);
+        // Enqueue frame (header + payload).
+        self.send_queue.push_front(self.send_buf.split().freeze());
 
         // Update poller to add write interest.
         if !self.current_interest.writable {
@@ -99,7 +101,7 @@ impl TcpStreamHandler {
 #[non_exhaustive]
 pub enum QueueOutgoingMessageError {
     #[error("failed to create frame header: {0}")]
-    CreateFrameHeader(#[from] CreateHeaderError),
+    CreateFrameHeader(#[from] EncodeHeaderError),
 
     #[error("failed to update poller interest: {0}")]
     UpdatePollerInterest(#[from] io::Error),
@@ -154,13 +156,27 @@ impl TcpStreamHandler {
     }
 
     fn next_incoming_message(&mut self) -> Result<Option<IncomingMessage>, DecodeHeaderError> {
-        match Header::split_frame_from(&mut self.recv_buf) {
-            Ok((header, payload)) => Ok(Some(IncomingMessage {
-                data: payload,
-                channel: header.channel,
-            })),
+        match Header::decode_from(&mut self.recv_buf) {
+            // Decoded and complete frame available.
+            Ok((header, wire_size))
+                if self.recv_buf.len() >= header.payload_length as usize + wire_size =>
+            {
+                let _header = self.recv_buf.split_to(wire_size);
+                let payload = self.recv_buf.split_to(header.payload_length);
+                Ok(Some(IncomingMessage {
+                    data: payload,
+                    channel: header.channel,
+                }))
+            }
+
+            // Decoded but complete frame unavailable.
+            Ok(_) => Ok(None),
+
+            // Not enough bytes to decode.
             Err(DecodeHeaderError::BufferTooSmall) => Ok(None),
-            Err(e) => Err(e),
+
+            // Invalid header data.
+            Err(e) => Err(e.into()),
         }
     }
 

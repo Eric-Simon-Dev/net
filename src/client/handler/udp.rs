@@ -77,14 +77,14 @@ impl UdpHandler {
         message: OutgoingMessage,
     ) -> Result<(), QueueOutgoingMessageError> {
         // Create header.
-        let header = Header::Classic {
+        let header = Header {
             channel: message.channel,
             seq: self.send_seq,
         };
         self.send_seq += 1;
 
         // Buffer datagram.
-        header.put_into(&mut self.write_buf);
+        header.encode_into(&mut self.write_buf);
         self.write_buf.put(message.data);
         let datagram = self.write_buf.split().freeze();
 
@@ -150,20 +150,21 @@ impl UdpHandler {
 
     fn validate_datagram(&mut self, mut datagram: BytesMut) -> Option<IncomingMessage> {
         // Parse header or drop.
-        let header = match Header::split_from(&mut datagram) {
+        let (header, header_wire_size) = match Header::decode_from(&datagram) {
             Ok(header) => header,
             Err(_) => return None,
         };
+        let _header = datagram.split_to(header_wire_size);
         let payload = datagram;
 
         // Validate seq or drop.
-        if !self.recv_seq_window.check_and_mark(header.seq()) {
+        if !self.recv_seq_window.check_and_mark(header.seq) {
             return None;
         }
 
         Some(IncomingMessage {
             data: payload,
-            channel: header.channel(),
+            channel: header.channel,
         })
     }
 
