@@ -134,7 +134,7 @@ impl UdpHandler {
         let payload = &buf[header_wire_size..];
 
         // Drop if header seq number invalid.
-        if !client.recv_seq_window.check_and_mark(header.seq) {
+        if !client.recv_seq_window.accept(header.seq) {
             return;
         }
 

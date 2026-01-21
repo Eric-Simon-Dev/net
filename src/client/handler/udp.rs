@@ -158,7 +158,7 @@ impl UdpHandler {
         let payload = datagram;
 
         // Validate seq or drop.
-        if !self.recv_seq_window.check_and_mark(header.seq) {
+        if !self.recv_seq_window.accept(header.seq) {
             return None;
         }
 
