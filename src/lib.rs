@@ -1,32 +1,112 @@
-//! Network library for client-server focused on simplicity.
+//! Client-Server network library intended for realtime multiplayer games.
+//! 
+//! Provides a small [transport layer](https://en.wikipedia.org/wiki/Transport_layer)
+//! over TCP and UDP. Goals are:
+//! - **Simplicity**: Keep the API easy to use and specialized in realtime.
+//! - **Performance**: Investigate the tips and tricks to optimize network performance.
+//! 
+//! I develop this for learning purposes and to have a simple API to work with.
+//! If this project gets more serious, I will do benchmarks and comparisons
+//! (another similar crate for example is [laminar](https://crates.io/crates/laminar)).
+//! 
+//! To ensure compatibility, use the same version of this crate on your client and server.
+//! 
+//! # Features
+//! 
+//! ## Message-based API
+//! 
+//! TCP frames and UDP packets are abstracted away in favor of abstract messages.
 //!
-//! - **Custom protocols**: This crate defines custom transport protocols
-//! over both TCP and UDP. These protocols are not public specifications
-//! thus both your client and server should use this crate and the same version of it.
+//! They have a *channel byte for multiplexing* and guarantees.
+//! 
+//! Always guaranteed:
+//! - Integrity: Data is not malformed (already ensured by TCP and UDP protocols).
+//! - Bounds: Messages are not segmented or concatenated (only internally eventually).
+//! - Deduplication: The same message cannot be received multiple times.
+//! 
+//! Optionally guaranteed:
+//! - Delivery: Ensure message delivery with ACK and timers.
+//! - DeliveryOrder: Ensure message delivery and order *relative to the channel*.
+//! 
+//! ## Reliability mechanisms
+//! 
+//! 
+//! # Architecture
+//! 
+//!- [Reactor-based design](https://en.wikipedia.org/wiki/Reactor_pattern):
+//! Upon a successfull call to [`listen(..)`](crate::server::listen) or [`connect(..)`](`crate::client::connect`),
+//! a reactor thread is spawned.
+//! It waits for IO events ([`polling`] crate) and currently also processes them (simpler for now).
+//! All operations are non-blocking.
+//! 
+//! # API
+//! 
+//! The thread is spawned upon a successfull listen/connect operation.
+//! 
+//! Interfacing with the  is done using channels and a *waker*
+//! (mechanism used to wake up network thread from the main thread).
+//! 
+//! # Usage
+//! 
+//! ## Server side
+//! 
+//! ```
+//! // Use `net::server` module.
+//! use net::server::{listen, Incoming, Outgoing, Command, Notification};
 //!
-//! - **Separate single thread**: Network-related operations are run
-//! on a single separate thread called the reactor.
+//! let (outgoing, incoming, waker) = listen(SERVER_ADDR).unwrap();
+//! 
+//! // Interface:
+//! // - `outgoing`: To send either to the network (messages) or to the reactor (commands).
+//! // - `incoming`: To receive either from the network (messages) or from the reactor (notifications).
+//! // - `waker` : To wake the reactor (sending does not wake it).
 //!
-//! # Example
+//! 
+//!
+//! // Test:
+//! // 1. Wait for connection notification.
+//! // 2. Wait for "hello" message.
+//! // 3. Wait for disconnection notification.
+//! // 4. Shutdown reactor.
+//!
+//! let Incoming::Internal(Notification::Connection { .. }) = incoming.recv().unwrap() else {
+//!     panic!("should receive a connection notification");
+//! };
+//!
+//! let Incoming::Network(message) = incoming.recv().unwrap() else {
+//!     panic!("should receive a message");
+//! };
+//! assert_eq!(message.data[..], "hello".as_bytes()[..]);
+//!
+//! let Incoming::Internal(Notification::Disconnection { .. }) = incoming.recv().unwrap() else {
+//!     panic!("should receive a disconnection notification");
+//! };
+//!
+//! outgoing.send(Outgoing::Internal(Command::Shutdown)).unwrap();
+//! waker.wake_reactor().unwrap();
+//! ```
 //!
 //! ```
-//! # std::thread::scope(|s| {
-//! #     std::thread::Builder::new().name("server".to_string()).spawn_scoped(s, server);
-//! #     // Give server time to start so client connection succeeds.
-//! #     std::thread::sleep(std::time::Duration::from_millis(100));
-//! #     std::thread::Builder::new().name("client".to_string()).spawn_scoped(s, client);
-//! # });
+//! # use std::{thread, time};
+//! 
+//! // Simulate communication by running a server and a client on separate threads.
+//! thread::scope(|s| {
+//!     thread::Builder::new().name("server".to_string()).spawn_scoped(s, server_side);
+//!     thread::sleep(time::Duration::from_millis(100));
+//!     thread::Builder::new().name("client".to_string()).spawn_scoped(s, client_side);
+//! });
+//! 
 //! const SERVER_ADDR: &'static str = "0:12012";
 //! const CLIENT_ADDR: &'static str = "0:0";
-//!
-//! fn server() {
-//!     // Use `net::server` for server...
+//! 
+//! fn server_side() {
+//!     // Use `net::server` module on server side.
 //!     use net::server::{listen, Incoming, Outgoing, Command, Notification};
 //!
 //!     // Interface:
-//!     // - `incoming`: For receiving messages from network or notifications from reactor.
-//!     // - `outgoing`: For sending messages to network or commands to reactor.
-//!     // - `waker` : For waking reactor (sending to `outgoing` does not wake it).
+//!     // - `outgoing`: To send messages to network or *commands* (internal, to reactor).
+//!     // - `incoming`: To receive *messages* (external, from network) or *notifications* (internal, from reactor).
+//!     // - `waker` : For waking reactor (sending with `outgoing` does not wake it).
 //!
 //!     let (outgoing, incoming, waker) = listen(SERVER_ADDR).unwrap();
 //!
@@ -53,8 +133,8 @@
 //!     waker.wake_reactor().unwrap();
 //! }
 //!
-//! fn client() {
-//!     // ... and `net::client` for client.
+//! fn client_side() {
+//!     // Use `net::client` module on client side.
 //!     use net::client::{connect, OutgoingMessage, Outgoing, Command, Guarantees};
 //!     use bytes::BytesMut;
 //!
@@ -99,6 +179,8 @@
 //! - Remove waker.
 
 mod doc {
+    //! # Architecture
+    //! 
     //! # Naming convention
     //!
     //! Shorter socket names:
