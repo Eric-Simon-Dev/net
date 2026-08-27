@@ -30,13 +30,13 @@ Optionally guaranteed:
 # Architecture
 
 [Reactor-based design](https://en.wikipedia.org/wiki/Reactor_pattern):
-Upon a successfull call to `listen(..)` or `connect(..)`, a reactor thread is spawned.
+Upon a successful call to `listen(..)` or `connect(..)`, a reactor thread is spawned.
 It waits for IO events (`polling` crate) and processes them (should dispatch work to other threads eventually i keep it simple for now).
 All operations are non-blocking.
 
 # API
 
-The reactor/request_handler thread is spawned upon a successfull listen/connect operation.
+The reactor/request_handler thread is spawned upon a successful listen/connect operation.
 
 Interfacing with it is done using channels and a *waker*
 (mechanism used to wake it up from main thread).
@@ -119,7 +119,7 @@ fn client_side() {
 # Roadmap
 
 **Questions**:
-- Remove dependancy on [`bytes::BytesMut`] ?
+- Remove dependency on [`bytes::BytesMut`] ?
 Quite practical to use and well supported so idk.
 - Remove custom protocols for public specifications ?
 Depends on whether I need specialized protocols.
